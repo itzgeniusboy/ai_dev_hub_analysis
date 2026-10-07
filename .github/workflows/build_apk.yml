@@ -33,7 +33,7 @@ jobs:
           APP_GRADLE=$(ls android/app/build.gradle android/app/build.gradle.kts 2>/dev/null | head -1)
           sed -i -E 's/compileSdk(Version)?[[:space:]]*=?[[:space:]]*(flutter\.compileSdkVersion|[0-9]+)/compileSdk = 36/' "$APP_GRADLE"
           find "$HOME/.pub-cache/hosted" \( -name build.gradle -o -name build.gradle.kts \) -path "*/android/*" \
-            -exec sed -i -E 's/(compileSdk(Version)?[[:space:]]*=?[[:space:]]*)[0-9]+/\g<1>36/g' {} +
+            -exec sed -i -E 's/(compileSdk(Version)?[[:space:]]*=?[[:space:]]*)[0-9]+/\1 36/g' {} +
           echo "app:"; grep -n "compileSdk" "$APP_GRADLE" || true
 
       - name: Build release APK
