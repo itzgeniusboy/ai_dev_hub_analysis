@@ -25,6 +25,17 @@ class SecureStore {
   Future<String?> gatewayToken() => _s.read(key: 'gateway_token');
   Future<void> setGatewayToken(String v) => _s.write(key: 'gateway_token', value: v);
 
+  Future<String?> telegramToken() => _s.read(key: 'telegram_token');
+  Future<void> setTelegramToken(String? v) => (v == null || v.isEmpty)
+      ? _s.delete(key: 'telegram_token')
+      : _s.write(key: 'telegram_token', value: v);
+  Future<int?> telegramChatId() async => int.tryParse(
+      (await SharedPreferences.getInstance()).getString('telegram_chat') ?? '');
+  Future<void> setTelegramChatId(int? v) async {
+    final p = await SharedPreferences.getInstance();
+    v == null ? p.remove('telegram_chat') : p.setString('telegram_chat', '$v');
+  }
+
   // ---- non-secret ----
   Future<String?> gatewayKind() async =>
       (await SharedPreferences.getInstance()).getString('gateway_kind');

@@ -18,6 +18,8 @@ class AppSettings extends ChangeNotifier {
   bool terminalEnabled = false; // termux_run / shell_run tools
   bool terminalConfirm = true; // ask before every command
   bool deviceFilesEnabled = false; // let the model manage files on the device
+  bool browserEnabled = false; // in-app browser automation tools
+  bool browserConfirm = true; // ask before open / click / type
 
   late SharedPreferences _p;
 
@@ -33,6 +35,8 @@ class AppSettings extends ChangeNotifier {
     deviceFilesEnabled = _p.getBool('deviceFilesEnabled') ?? false;
     terminalEnabled = _p.getBool('terminalEnabled') ?? false;
     terminalConfirm = _p.getBool('terminalConfirm') ?? true;
+    browserEnabled = _p.getBool('browserEnabled') ?? false;
+    browserConfirm = _p.getBool('browserConfirm') ?? true;
     notifyListeners();
   }
 
@@ -44,6 +48,8 @@ class AppSettings extends ChangeNotifier {
   void setToolsEnabled(bool v) { toolsEnabled = v; _p.setBool('toolsEnabled', v); _done(); }
   void setDeviceFilesEnabled(bool v) { deviceFilesEnabled = v; _p.setBool('deviceFilesEnabled', v); _done(); }
   void setTerminalEnabled(bool v) { terminalEnabled = v; _p.setBool('terminalEnabled', v); _done(); }
+  void setBrowserEnabled(bool v) { browserEnabled = v; _p.setBool('browserEnabled', v); _done(); }
+  void setBrowserConfirm(bool v) { browserConfirm = v; _p.setBool('browserConfirm', v); _done(); }
   void setTerminalConfirm(bool v) { terminalConfirm = v; _p.setBool('terminalConfirm', v); _done(); }
   void setWorkspace(String? uri) {
     workspaceUri = uri;

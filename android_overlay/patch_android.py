@@ -14,6 +14,9 @@ perms = [
     "android.permission.FOREGROUND_SERVICE_SPECIAL_USE",
     "android.permission.POST_NOTIFICATIONS",
     "android.permission.WAKE_LOCK",
+    "android.permission.RECORD_AUDIO",
+    "android.permission.RECEIVE_BOOT_COMPLETED",
+    "android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS",
     "android.permission.REQUEST_INSTALL_PACKAGES",
     "android.permission.MANAGE_EXTERNAL_STORAGE",
     "android.permission.READ_EXTERNAL_STORAGE",
@@ -25,7 +28,7 @@ s = s.replace("<application", add + "    <application", 1)
 if "usesCleartextTraffic" not in s:
     s = s.replace("<application", '<application android:usesCleartextTraffic="true"', 1)
 
-pk = '<package android:name="com.termux"/><package android:name="moe.shizuku.privileged.api"/>'
+pk = '<intent><action android:name="android.speech.RecognitionService"/></intent><package android:name="com.termux"/><package android:name="moe.shizuku.privileged.api"/>'
 if "com.termux\"/>" not in s:
     if "<queries>" in s:
         s = s.replace("<queries>", "<queries>" + pk, 1)

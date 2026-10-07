@@ -19,6 +19,9 @@ import 'features/proxy/proxy_screen.dart';
 import 'features/settings/connectors_screen.dart';
 import 'features/settings/settings_screen.dart';
 import 'features/settings/skills_screen.dart';
+import 'services/telegram_bridge.dart';
+import 'services/browser_session.dart';
+import 'services/agent/browser_tools.dart';
 import 'services/agent/agent_runner.dart';
 import 'services/agent/agent_tools.dart';
 import 'services/agent/device_file_tools.dart';
@@ -69,6 +72,7 @@ class AppServices {
   late final RouterService router;
   late final ProxyServer proxyServer;
   late final ProxyController proxy;
+  late final TelegramBridge telegram;
   late final LocalGateways gateways;
   late final ModelHealth health = ModelHealth(client);
   late final DeliveryStore delivery = DeliveryStore(() async {
@@ -110,6 +114,7 @@ class AppServices {
     }
     if (settings.deviceFilesEnabled && deviceFiles != null) kits.add(deviceFiles!);
     if (settings.terminalEnabled) kits.add(TerminalToolkit(terminalBridge, settings));
+    if (settings.browserEnabled) kits.add(BrowserToolkit(settings));
     // Always available, so Build / Autonomous can hand results back in chat.
     kits.add(DeliveryToolkit(delivery, allowDevicePaths: settings.deviceFilesEnabled));
     final auto = mode == ChatMode.autonomous;
@@ -155,6 +160,13 @@ class AppServices {
     await a.gateways.init(); // OmniRoute starts by default
     await a.rebuildChain();
     unawaited(a.refreshGatewayModels()); // live model list, never blocks startup
+
+    // Telegram bot: resume automatically so replies keep flowing after a restart.
+    a.telegram = TelegramBridge(router: a.router, systemPrompt: a.settings.systemPrompt);
+    final tgToken = await a.store.telegramToken();
+    if (tgToken != null && tgToken.isNotEmpty) {
+      unawaited(a.telegram.start(tgToken, chatId: await a.store.telegramChatId()));
+    }
 
     // Restore GitHub session if we have a token + repo.
     final token = await a.store.githubToken();
@@ -282,7 +294,7 @@ class HubApp extends StatelessWidget {
           builder: (ctx, child) => MediaQuery(
             data: MediaQuery.of(ctx)
                 .copyWith(textScaler: TextScaler.linear(app.settings.fontScale)),
-            child: child!,
+            child: BrowserHost(child: child!),
           ),
           home: HomeShell(app),
         ),
@@ -374,6 +386,8 @@ class _HomeShellState extends State<HomeShell> {
             ? null
             : '${app.selection!.repo.owner}/${app.selection!.repo.repo}',
         onOpenGitHub: _openGitHub,
+        telegram: app.telegram,
+        store: app.store,
       ));
 
   void _openProviders() => _push(ProvidersScreen(
@@ -596,7 +610,7 @@ class _HomeShellState extends State<HomeShell> {
           delivery: app.delivery,
           onPickFile: _attachFile,
           onPickPhoto: _attachPhoto,
-          toolsEnabled: s.toolsEnabled || s.deviceFilesEnabled || s.terminalEnabled,
+          toolsEnabled: s.toolsEnabled || s.deviceFilesEnabled || s.terminalEnabled || s.browserEnabled,
           agentFactory: app.makeAgent,
         ),
       ),

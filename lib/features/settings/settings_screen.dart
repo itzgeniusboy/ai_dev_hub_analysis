@@ -241,6 +241,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
             trailing: const Icon(Icons.chevron_right_rounded),
             onTap: widget.onOpenTerminal,
           ),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            secondary: const Icon(Icons.public_rounded),
+            title: const Text('Browser automation'),
+            subtitle: const Text('Let the model open pages, click and type in an in-app browser.'),
+            value: s.browserEnabled,
+            onChanged: s.setBrowserEnabled,
+          ),
+          if (s.browserEnabled)
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              secondary: const Icon(Icons.verified_user_outlined),
+              title: const Text('Ask before each browser action'),
+              subtitle: const Text('Recommended: web pages can try to trick the model.'),
+              value: s.browserConfirm,
+              onChanged: s.setBrowserConfirm,
+            ),
         ]),
       ]),
     );

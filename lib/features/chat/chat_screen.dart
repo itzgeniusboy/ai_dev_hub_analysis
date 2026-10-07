@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'dart:ui' show ImageFilter;
 
 import 'package:flutter/material.dart' hide KeepAlive;
+import 'package:flutter/services.dart' show Clipboard, ClipboardData;
+import 'package:speech_to_text/speech_to_text.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 
@@ -152,9 +154,60 @@ class _ChatScreenState extends State<ChatScreen> {
   final _pending = <Attachment>[];
   bool get _busy => _sub != null;
 
+  // ---- voice input ----------------------------------------------------------
+  final _speech = SpeechToText();
+  bool _speechReady = false;
+  bool _listening = false;
+  String _beforeSpeech = '';
+
+  Future<void> _toggleMic() async {
+    Haptics.toggle();
+    if (_listening) {
+      await _speech.stop();
+      if (mounted) setState(() => _listening = false);
+      return;
+    }
+    if (!_speechReady) {
+      _speechReady = await _speech.initialize(
+        onStatus: (st) {
+          if ((st == 'done' || st == 'notListening') && mounted) {
+            setState(() => _listening = false);
+          }
+        },
+        onError: (_) {
+          if (mounted) setState(() => _listening = false);
+        },
+      );
+    }
+    if (!_speechReady) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text('Voice input unavailable. Allow microphone access and install a speech service.')));
+      }
+      return;
+    }
+    _beforeSpeech = _input.text.isEmpty ? '' : '${_input.text.trimRight()} ';
+    setState(() => _listening = true);
+    await _speech.listen(
+      listenOptions: SpeechListenOptions(partialResults: true),
+      onResult: (r) {
+        _input.text = '$_beforeSpeech${r.recognizedWords}';
+        _input.selection = TextSelection.collapsed(offset: _input.text.length);
+      },
+    );
+  }
+
+  static const _suggestions = <(IconData, String, String)>[
+    (Icons.build_circle_outlined, 'Fix a bug', 'Help me find and fix a bug in my code. I will paste it next.'),
+    (Icons.rocket_launch_outlined, 'Build an app', 'Build a small web app and show it running inline.'),
+    (Icons.account_tree_outlined, 'Explain a repo', 'Walk me through the structure of my selected GitHub repo.'),
+    (Icons.send_outlined, 'Draft a message', 'Draft a short, friendly follow-up message for me.'),
+  ];
+
   @override
   void dispose() {
     _keepAlive(false);
+    _speech.cancel();
     _agent?.cancel();
     _sub?.cancel();
     _input.dispose();
@@ -671,7 +724,14 @@ class _ChatScreenState extends State<ChatScreen> {
       ),
       body: Column(children: [
         Expanded(
-          child: ListView.builder(
+          child: _items.isEmpty
+              ? _Suggestions(
+                  items: _suggestions,
+                  onTap: (prompt) {
+                    _input.text = prompt;
+                    _send();
+                  })
+              : ListView.builder(
             controller: _scroll,
             padding: EdgeInsets.fromLTRB(
                 12, MediaQuery.of(context).padding.top + kToolbarHeight + 8, 12, 12),
@@ -697,6 +757,8 @@ class _ChatScreenState extends State<ChatScreen> {
           onSend: _send,
           onStop: _stop,
           onPlus: _plusMenu,
+          listening: _listening,
+          onMic: _toggleMic,
         ),
       ]),
     );
@@ -920,6 +982,25 @@ class _Bubble extends StatelessWidget {
                     child: Text(item.error!,
                         style: TextStyle(color: cs.error, fontSize: 12)),
                   ),
+                if (!item.streaming && item.text.isNotEmpty)
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: IconButton(
+                      tooltip: 'Copy response',
+                      visualDensity: VisualDensity.compact,
+                      iconSize: 18,
+                      color: cs.onSurfaceVariant,
+                      icon: const Icon(Icons.copy_rounded),
+                      onPressed: () {
+                        Clipboard.setData(ClipboardData(text: item.text));
+                        Haptics.copy();
+                        ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                                duration: Duration(seconds: 1),
+                                content: Text('Copied')));
+                      },
+                    ),
+                  ),
               ]);
 
     return Align(
@@ -945,7 +1026,8 @@ class _Composer extends StatelessWidget {
   final bool busy;
   final List<Attachment> pending;
   final ValueChanged<Attachment> onRemovePending;
-  final VoidCallback onSend, onStop, onPlus;
+  final VoidCallback onSend, onStop, onPlus, onMic;
+  final bool listening;
   const _Composer(
       {required this.controller,
       required this.busy,
@@ -953,7 +1035,9 @@ class _Composer extends StatelessWidget {
       required this.onRemovePending,
       required this.onSend,
       required this.onStop,
-      required this.onPlus});
+      required this.onPlus,
+      required this.onMic,
+      required this.listening});
 
   @override
   Widget build(BuildContext context) {
@@ -997,11 +1081,17 @@ class _Composer extends StatelessWidget {
                   textInputAction: TextInputAction.newline,
                   style: TextStyle(color: cs.onSurface),
                   decoration: InputDecoration(
-                      hintText: 'Message',
+                      hintText: listening ? 'Listening…' : 'Message',
                       hintStyle: TextStyle(color: cs.onSurfaceVariant),
                       border: InputBorder.none,
                       contentPadding: const EdgeInsets.symmetric(vertical: 12)),
                 ),
+              ),
+              IconButton(
+                tooltip: listening ? 'Stop listening' : 'Voice input',
+                icon: Icon(listening ? Icons.mic_rounded : Icons.mic_none_rounded,
+                    color: listening ? cs.error : null),
+                onPressed: onMic,
               ),
               IconButton.filled(
                 icon: Icon(busy ? Icons.stop_rounded : Icons.arrow_upward_rounded),
@@ -1048,6 +1138,40 @@ class _ToolRow extends StatelessWidget {
                     overflow: TextOverflow.ellipsis),
             ]),
           ),
+        ]),
+      ),
+    );
+  }
+}
+
+
+/// Empty-state suggestion buttons; tapping one sends that prompt.
+class _Suggestions extends StatelessWidget {
+  final List<(IconData, String, String)> items;
+  final ValueChanged<String> onTap;
+  const _Suggestions({required this.items, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Text('What can I help with?',
+              style: Theme.of(context).textTheme.titleMedium),
+          const SizedBox(height: 16),
+          Wrap(spacing: 8, runSpacing: 8, alignment: WrapAlignment.center, children: [
+            for (final (icon, label, prompt) in items)
+              ActionChip(
+                avatar: Icon(icon, size: 18, color: cs.onSurface),
+                label: Text(label, style: TextStyle(color: cs.onSurface)),
+                onPressed: () {
+                  Haptics.toggle();
+                  onTap(prompt);
+                },
+              ),
+          ]),
         ]),
       ),
     );

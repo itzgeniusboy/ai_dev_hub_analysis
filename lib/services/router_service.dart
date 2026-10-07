@@ -103,6 +103,7 @@ class RouterService {
       targets = candidates.where((e) => !_rateLimited.contains(e.id)).toList();
     }
     final skipped = candidates.length - targets.length;
+    final hasImages = req.messages.any((m) => m['content'] is List);
     if (order != null) targets = order!(targets);
     for (final e in targets) {
       onAttempt?.call(e);
@@ -140,7 +141,8 @@ class RouterService {
         if (emitted) rethrow;
       } on FatalError catch (err) {
         s.errors++;
-        _cool(e, const Duration(minutes: 5), err); // bad key / model: stop hammering
+        // A text-only model rejecting a photo is not a bad key: skip the long cool-down.
+        if (!hasImages) _cool(e, const Duration(minutes: 5), err); // bad key / model: stop hammering
         lastError = err;
         if (emitted) rethrow;
       } finally {

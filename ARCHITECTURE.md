@@ -118,3 +118,21 @@ Written against current APIs from memory and **not compiled or run** (no Flutter
 - Skills (`skill_store.dart`) are appended to the system prompt while enabled.
 - Inference parameters (temperature, top-p, max tokens, context size) are no longer exposed.
 - Theme: text theme now follows brightness and `onSurface`/`onSurfaceVariant` are set explicitly.
+
+## Update: composer features and background connectors
+
+- Chat: empty-state suggestion chips, mic button (`speech_to_text`, needs RECORD_AUDIO, added by `patch_android.py`),
+  copy button under every finished assistant reply. File/photo attachment already lives in the `+` sheet.
+- `lib/services/telegram_bridge.dart`: Telegram Bot API long polling, answers only the chat you approve,
+  holds the foreground service via `KeepAlive`, resumes on app launch. Token in secure storage.
+- Connectors screen: Telegram section and a battery-optimization exemption button.
+- NOT implemented: email (IMAP/SMTP), WhatsApp, browser automation. Not compiled or run (no Flutter toolchain here).
+
+## Update: browser automation + photo fix
+
+- `services/browser_session.dart`: one WebView kept mounted by `BrowserHost` (wraps MaterialApp child; 1px hidden, 45% panel when shown). http/https only.
+- `services/agent/browser_tools.dart`: browser_open/read/click/type/scroll/back/show. Elements are numbered via a `data-ah` attribute.
+  Settings > Browser automation (default off) and "Ask before each browser action" (default on).
+- Router: a 400 on a request containing photos no longer cools the provider down for 5 minutes (text-only models reject images).
+- Photos are sent as `image_url` parts, so they only work with vision-capable models. Pick one in the model pill if Auto fails.
+- Not compiled or run. webview_flutter on Android may need `minSdk 21+` (already >= 23).
