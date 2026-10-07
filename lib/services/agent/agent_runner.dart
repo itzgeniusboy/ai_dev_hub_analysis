@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import '../../core/models.dart';
 import '../build_poller.dart';
+import '../deliverables.dart';
 import '../router_service.dart';
 import 'agent_tools.dart';
 
@@ -28,6 +29,11 @@ class AgentToolDone extends AgentEvent {
 class AgentBuild extends AgentEvent {
   final Stream<BuildStatus> status;
   AgentBuild(this.status);
+}
+
+class AgentDeliver extends AgentEvent {
+  final List<Deliverable> items;
+  AgentDeliver(this.items);
 }
 
 class AgentNotice extends AgentEvent {
@@ -214,6 +220,7 @@ class AgentRunner {
 
         final build = res.build;
         if (build != null) yield AgentBuild(build);
+        if (res.deliverables.isNotEmpty) yield AgentDeliver(res.deliverables);
         yield AgentToolDone(id, res.ok, _summary(res.content));
         convo.add({
           'role': 'tool',

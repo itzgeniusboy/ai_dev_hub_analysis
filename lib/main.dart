@@ -28,8 +28,12 @@ import 'features/settings/terminal_screen.dart';
 import 'services/app_settings.dart';
 import 'services/build_poller.dart';
 import 'services/chat_codec.dart';
+import 'services/agent/delivery_tools.dart';
 import 'services/default_providers.dart';
+import 'services/deliverables.dart';
 import 'services/github_service.dart';
+import 'services/local_gateway.dart';
+import 'services/model_health.dart';
 import 'services/local_file_service.dart';
 import 'services/openai_compatible_client.dart';
 import 'services/proxy_controller.dart';
@@ -65,6 +69,14 @@ class AppServices {
   late final RouterService router;
   late final ProxyServer proxyServer;
   late final ProxyController proxy;
+  late final LocalGateways gateways;
+  late final ModelHealth health = ModelHealth(client);
+  late final DeliveryStore delivery = DeliveryStore(() async {
+    final d = Directory('${(await getApplicationDocumentsDirectory()).path}/deliverables');
+    await d.create(recursive: true);
+    return d;
+  });
+  List<Endpoint> upstream = []; // real providers behind the embedded gateways
 
   List<ProviderDef> providers = [];
   List<Endpoint> chain = [];
@@ -98,7 +110,8 @@ class AppServices {
     }
     if (settings.deviceFilesEnabled && deviceFiles != null) kits.add(deviceFiles!);
     if (settings.terminalEnabled) kits.add(TerminalToolkit(terminalBridge, settings));
-    if (kits.isEmpty) return null;
+    // Always available, so Build / Autonomous can hand results back in chat.
+    kits.add(DeliveryToolkit(delivery, allowDevicePaths: settings.deviceFilesEnabled));
     final auto = mode == ChatMode.autonomous;
     return AgentRunner(
       router: router,
@@ -128,6 +141,18 @@ class AppServices {
     a.proxyServer =
         ProxyServer(router: a.router, modelIds: () => [for (final e in a.chain) e.id]);
     a.proxy = ProxyController(a.proxyServer, a.store);
+    a.gateways = LocalGateways(
+      client: a.client,
+      store: a.store,
+      stats: a.router.stats,
+      upstream: () => a.upstream,
+      onChanged: () async {
+        await a.rebuildChain();
+        unawaited(a.refreshGatewayModels(force: true));
+      },
+    );
+    await a.rebuildChain(); // fills `upstream`
+    await a.gateways.init(); // OmniRoute starts by default
     await a.rebuildChain();
     unawaited(a.refreshGatewayModels()); // live model list, never blocks startup
 
@@ -177,10 +202,7 @@ class AppServices {
   /// Models the gateways report are appended as pick-only entries, so the model
   /// switcher can pin one without lengthening the automatic fallback chain.
   Future<void> rebuildChain() async {
-    final out = <Endpoint>[
-      for (final g in DefaultProviders.all)
-        Endpoint(providerId: g.id, baseUrl: g.baseUrl, apiKey: g.apiKey, model: 'auto'),
-    ];
+    final up = <Endpoint>[];
     final ordered = [
       ...providers.where((p) => p.id != 'custom'),
       ...providers.where((p) => p.id == 'custom'),
@@ -196,9 +218,20 @@ class AppServices {
       if (_pointsAtOwnProxy(base)) continue; // would call itself in a loop
       final models = isCustom ? ['auto'] : p.models;
       for (final m in models) {
-        out.add(Endpoint(providerId: p.id, baseUrl: base, apiKey: key, model: m));
+        up.add(Endpoint(providerId: p.id, baseUrl: base, apiKey: key, model: m));
       }
     }
+    final upSig = up.map((e) => '${e.id}|${e.baseUrl}|${e.apiKey.hashCode}').join(';');
+    if (_upSig != null && _upSig != upSig) gateways.resetCooldowns();
+    _upSig = upSig;
+    upstream = up;
+    // Chat talks to the running embedded gateway. While it is stopped (or
+    // failed to start) chat uses the providers directly, so it never goes dead.
+    final out = <Endpoint>[
+      for (final g in DefaultProviders.all)
+        Endpoint(providerId: g.id, baseUrl: g.baseUrl, apiKey: g.apiKey, model: 'auto'),
+      if (DefaultProviders.all.isEmpty) ...up,
+    ];
     for (final g in DefaultProviders.all) {
       for (final m in _discovered[g.id] ?? const <String>[]) {
         out.add(Endpoint(
@@ -211,11 +244,15 @@ class AppServices {
     }
     chain = out;
     final sig = out.map((e) => '${e.id}|${e.baseUrl}|${e.apiKey.hashCode}').join(';');
-    if (_chainSig != null && _chainSig != sig) router.resetCooldowns(); // config changed
+    if (_chainSig != null && _chainSig != sig) {
+      router.resetCooldowns(); // config changed
+      health.clear(); // old probe results no longer apply
+    }
     _chainSig = sig;
   }
 
   String? _chainSig;
+  String? _upSig;
 
   /// True if [url] targets this phone's own proxy port (loopback), which would
   /// make the app call itself.
@@ -224,7 +261,8 @@ class AppServices {
     if (u == null) return false;
     const loop = {'localhost', '127.0.0.1', '::1', '[::1]', '0.0.0.0'};
     final port = u.hasPort ? u.port : (u.scheme == 'https' ? 443 : 80);
-    return loop.contains(u.host) && port == proxy.port;
+    final own = {proxy.port, DefaultProviders.omniRoutePort, DefaultProviders.freeLlmApiPort, gateways.port};
+    return loop.contains(u.host) && own.contains(port);
   }
 }
 
@@ -359,6 +397,7 @@ class _HomeShellState extends State<HomeShell> {
         onOpenProviders: _openProviders,
         onOpenProxy: _openProxy,
         onOpenTerminal: _openTerminal,
+        gateways: app.gateways,
       ));
 
   Widget _drawer() {
@@ -443,31 +482,17 @@ class _HomeShellState extends State<HomeShell> {
   }
 
   /// Download the artifact ZIP, unpack it, then install the APK or share the file.
-  Future<void> _downloadArtifact(BuildArtifact a) async {
-    try {
-      final zip = await app.poller!.downloadArtifactZip(a);
-      final archive = ZipDecoder().decodeBytes(zip);
-      final dir = Directory('${(await getApplicationDocumentsDirectory()).path}/builds');
-      await dir.create(recursive: true);
-      File? apk, other;
-      for (final f in archive) {
-        if (!f.isFile) continue;
-        final name = f.name.split('/').last;
-        final out = File('${dir.path}/$name');
-        await out.writeAsBytes(f.content as List<int>);
-        name.endsWith('.apk') ? apk = out : other = out;
-      }
-      if (apk != null) {
-        await OpenFilex.open(apk.path, type: 'application/vnd.android.package-archive');
-      } else if (other != null) {
-        await Share.shareXFiles([XFile(other.path)]);
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Download failed: $e')));
-      }
+  Future<List<Deliverable>> _downloadArtifact(BuildArtifact a) async {
+    final zip = await app.poller!.downloadArtifactZip(a);
+    final archive = ZipDecoder().decodeBytes(zip);
+    final out = <Deliverable>[];
+    for (final f in archive) {
+      if (!f.isFile) continue;
+      out.add(await app.delivery.saveBytes(f.name.split('/').last, f.content as List<int>));
     }
+    // A build with no loose files (rare): hand over the original zip.
+    if (out.isEmpty) out.add(await app.delivery.saveBytes('${a.name}.zip', zip));
+    return out;
   }
 
   // ---- attach -------------------------------------------------------------
@@ -550,8 +575,12 @@ class _HomeShellState extends State<HomeShell> {
           key: ValueKey(session.created.toIso8601String()),
           router: app.router,
           models: app.router.available,
-          onModelMenuOpen: () =>
-              app.refreshGatewayModels().then((_) => mounted ? setState(() {}) : null),
+          health: app.health,
+          onModelMenuOpen: () => app.refreshGatewayModels().then((_) {
+            // Newly discovered models get verified too.
+            app.health.check(app.router.available().where((e) => e.selectableOnly));
+            if (mounted) setState(() {});
+          }),
           systemPrompt: s.systemPrompt,
           skills: app.skills,
           onManageSkills: _openSkills,
@@ -564,6 +593,7 @@ class _HomeShellState extends State<HomeShell> {
           githubConnected: app.gh != null,
           onTriggerBuild: _triggerBuild,
           onDownloadArtifact: _downloadArtifact,
+          delivery: app.delivery,
           onPickFile: _attachFile,
           onPickPhoto: _attachPhoto,
           toolsEnabled: s.toolsEnabled || s.deviceFilesEnabled || s.terminalEnabled,

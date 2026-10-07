@@ -2,7 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:ui' show ImageFilter;
 
-import 'package:flutter/material.dart' hide KeepAlive;
+import 'package:flutter/material.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 
@@ -15,11 +15,14 @@ import '../../services/agent/agent_tools.dart' show ApprovalRequest;
 import '../../services/build_poller.dart';
 import '../../services/chat_codec.dart';
 import '../../services/default_providers.dart';
+import '../../services/deliverables.dart';
 import '../../services/keep_alive.dart';
+import '../../services/model_health.dart';
 import '../../services/router_service.dart';
 import '../../services/skill_store.dart';
 import 'build_card.dart';
 import 'code_block.dart';
+import 'deliverable_card.dart';
 
 sealed class ChatItem {}
 
@@ -44,6 +47,13 @@ class BuildItem extends ChatItem {
   BuildItem(this.status);
 }
 
+/// A file / zip / code / web app / APK delivered inline in the chat.
+class DeliverableItem extends ChatItem {
+  final Deliverable d;
+  final bool autoRun;
+  DeliverableItem(this.d, {this.autoRun = false});
+}
+
 /// One tool call made by the agent (ok == null while it runs).
 class ToolItem extends ChatItem {
   final String id, name, label;
@@ -66,7 +76,12 @@ class ChatScreen extends StatefulWidget {
 
   /// Return a status stream (BuildPoller.run(...)) or null if not configured.
   final Stream<BuildStatus>? Function()? onTriggerBuild;
-  final Future<void> Function(BuildArtifact)? onDownloadArtifact;
+  /// Download a finished build and return its files (APK, zip, ...), which
+  /// the chat then shows as inline cards.
+  final Future<List<Deliverable>> Function(BuildArtifact)? onDownloadArtifact;
+
+  /// Where code blocks are saved when the user taps "Save as file" / "Run".
+  final DeliveryStore? delivery;
   final VoidCallback? onOpenMenu; // side menu (chats, skills, connectors, settings)
   final VoidCallback? onNewChat;
   final VoidCallback? onOpenGitHub;
@@ -84,16 +99,20 @@ class ChatScreen extends StatefulWidget {
   final bool toolsEnabled;
   final AgentRunner? Function(ChatMode mode)? agentFactory;
 
+  final ModelHealth? health;
+
   const ChatScreen({
     super.key,
     required this.router,
     required this.models,
+    this.health,
     required this.skills,
     this.onModelMenuOpen,
     this.onManageSkills,
     this.systemPrompt = 'You are a helpful coding assistant.',
     this.onTriggerBuild,
     this.onDownloadArtifact,
+    this.delivery,
     this.onOpenMenu,
     this.onNewChat,
     this.onOpenGitHub,
@@ -290,6 +309,41 @@ class _ChatScreenState extends State<ChatScreen> {
         }
       });
 
+  /// Code block -> file card in the chat.
+  Future<void> _deliverCode(String code, String lang, {bool run = false}) async {
+    final store = widget.delivery;
+    if (store == null) return;
+    try {
+      final ext = Deliverable.extForLang(lang);
+      final d = await store.saveText(run ? 'app.html' : 'snippet.$ext', code);
+      if (!mounted) return;
+      setState(() => _items.add(DeliverableItem(d, autoRun: run)));
+      _scrollDown();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Could not save: $e')));
+      }
+    }
+  }
+
+  /// Finished build -> its files appear right in the chat (APK gets Install).
+  Future<void> _downloadInline(BuildArtifact a) async {
+    final fn = widget.onDownloadArtifact;
+    if (fn == null) return;
+    try {
+      final files = await fn(a);
+      if (!mounted) return;
+      setState(() => _items.addAll(files.map(DeliverableItem.new)));
+      _scrollDown();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Download failed: $e')));
+      }
+    }
+  }
+
   void _send() {
     final text = _input.text.trim();
     if ((text.isEmpty && _pending.isEmpty) || _busy) return;
@@ -455,6 +509,14 @@ class _ChatScreenState extends State<ChatScreen> {
           case AgentBuild(:final status):
             setState(() => _items.add(BuildItem(status.asBroadcastStream())));
             _scrollDown();
+          case AgentDeliver(:final items):
+            setState(() {
+              for (final d in items) {
+                _items.add(DeliverableItem(d, autoRun: d.kind == DeliverableKind.html));
+              }
+            });
+            Haptics.copy();
+            _scrollDown();
           case AgentNotice(:final text):
             setState(() {
               final c = cur;
@@ -546,6 +608,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 },
                 value: _model,
                 choices: () => widget.models(),
+                health: widget.health,
                 onOpen: widget.onModelMenuOpen,
                 onChanged: (m) {
                   Haptics.toggle();
@@ -616,11 +679,12 @@ class _ChatScreenState extends State<ChatScreen> {
             itemBuilder: (_, i) => Padding(
               padding: const EdgeInsets.only(bottom: 10),
               child: switch (_items[i]) {
-                final TextItem t => _Bubble(item: t),
+                final TextItem t => _Bubble(item: t, onDeliver: _deliverCode),
+                final DeliverableItem x => DeliverableCard(d: x.d, autoRun: x.autoRun),
                 final ToolItem t => _ToolRow(item: t),
                 final BuildItem b => BuildCard(
                     status: b.status,
-                    onDownload: widget.onDownloadArtifact ?? (_) async {}),
+                    onDownload: _downloadInline),
               },
             ),
           ),
@@ -648,13 +712,16 @@ String modelLabel(String id) {
   return '$provider · ${model == 'auto' ? 'Auto' : model}';
 }
 
-/// Compact model switcher. Lists only models that are configured and not
-/// currently failing; the list is rebuilt every time the menu opens.
+/// Compact model switcher. Tapping opens a sheet with the chat mode and the
+/// models that are active (gateway running), available (not cooling down) and
+/// capable of running (a live test request succeeded). Checks run when the
+/// sheet opens and the list fills in as results arrive.
 class _ModelPicker extends StatelessWidget {
   final ChatMode mode;
   final ValueChanged<ChatMode> onMode;
   final String value;
   final List<Endpoint> Function() choices;
+  final ModelHealth? health;
   final VoidCallback? onOpen;
   final ValueChanged<String> onChanged;
   const _ModelPicker(
@@ -663,51 +730,39 @@ class _ModelPicker extends StatelessWidget {
       required this.value,
       required this.choices,
       required this.onChanged,
+      this.health,
       this.onOpen});
+
+  void _open(BuildContext context) {
+    onOpen?.call();
+    health?.check(choices().where((e) => e.selectableOnly));
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (ctx) => _ModelSheet(
+        mode: mode,
+        onMode: (m) {
+          Navigator.pop(ctx);
+          onMode(m);
+        },
+        value: value,
+        choices: choices,
+        health: health,
+        onPick: (id) {
+          Navigator.pop(ctx);
+          onChanged(id);
+        },
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    return PopupMenuButton<String>(
-      tooltip: 'Switch model',
-      onOpened: onOpen,
-      onSelected: (v) => v.startsWith('mode:')
-          ? onMode(ChatMode.values.firstWhere((m) => 'mode:${m.name}' == v))
-          : onChanged(v),
-      constraints: const BoxConstraints(maxWidth: 320),
-      itemBuilder: (_) => [
-        for (final m in ChatMode.values)
-          PopupMenuItem(
-            value: 'mode:${m.name}',
-            child: Row(children: [
-              Expanded(
-                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text(m.label),
-                Text(m.hint, style: Theme.of(context).textTheme.labelSmall?.copyWith(color: cs.onSurfaceVariant)),
-              ])),
-              if (mode == m) const Icon(Icons.check_rounded, size: 18),
-            ]),
-          ),
-        const PopupMenuDivider(),
-        PopupMenuItem(
-          value: 'auto',
-          child: Row(children: [
-            Expanded(
-                child: Text('Auto (best available)',
-                    overflow: TextOverflow.ellipsis)),
-            if (value == 'auto') const Icon(Icons.check_rounded, size: 18),
-          ]),
-        ),
-        for (final e in choices())
-          PopupMenuItem(
-            value: e.id,
-            child: Row(children: [
-              Expanded(
-                  child: Text(modelLabel(e.id), overflow: TextOverflow.ellipsis)),
-              if (value == e.id) const Icon(Icons.check_rounded, size: 18),
-            ]),
-          ),
-      ],
+    return InkWell(
+      borderRadius: BorderRadius.circular(20),
+      onTap: () => _open(context),
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
         decoration: BoxDecoration(
@@ -730,15 +785,106 @@ class _ModelPicker extends StatelessWidget {
   }
 }
 
+class _ModelSheet extends StatelessWidget {
+  final ChatMode mode;
+  final ValueChanged<ChatMode> onMode;
+  final String value;
+  final List<Endpoint> Function() choices;
+  final ModelHealth? health;
+  final ValueChanged<String> onPick;
+  const _ModelSheet(
+      {required this.mode,
+      required this.onMode,
+      required this.value,
+      required this.choices,
+      required this.health,
+      required this.onPick});
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final tt = Theme.of(context).textTheme;
+    return ListenableBuilder(
+      listenable: health ?? ValueNotifier(0),
+      builder: (ctx, _) {
+        // Selectable (pinnable) models only; "auto" is its own row.
+        final all = choices().where((e) => e.selectableOnly).toList();
+        final ok = [
+          for (final e in all)
+            if (health == null || health!.stateOf(e) == ModelState.ok) e
+        ];
+        final checking = health?.pending ?? 0;
+        return SafeArea(
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+                maxHeight: MediaQuery.of(ctx).size.height * 0.75),
+            child: ListView(shrinkWrap: true, children: [
+              for (final m in ChatMode.values)
+                ListTile(
+                  dense: true,
+                  title: Text(m.label),
+                  subtitle: Text(m.hint),
+                  trailing: mode == m ? const Icon(Icons.check_rounded) : null,
+                  onTap: () => onMode(m),
+                ),
+              const Divider(),
+              ListTile(
+                title: const Text('Auto (best available)'),
+                subtitle: Text(ok.isEmpty
+                    ? 'Routes to whichever provider works right now'
+                    : '${ok.length} verified model${ok.length == 1 ? '' : 's'}'),
+                trailing:
+                    value == 'auto' ? const Icon(Icons.check_rounded) : null,
+                onTap: () => onPick('auto'),
+              ),
+              for (final e in ok)
+                ListTile(
+                  dense: true,
+                  title: Text(modelLabel(e.id), overflow: TextOverflow.ellipsis),
+                  subtitle: Text('Verified · ${health?.latencyOf(e) ?? 0} ms'),
+                  trailing:
+                      value == e.id ? const Icon(Icons.check_rounded) : null,
+                  onTap: () => onPick(e.id),
+                ),
+              if (checking > 0)
+                ListTile(
+                  dense: true,
+                  leading: const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2)),
+                  title: Text('Checking $checking model${checking == 1 ? '' : 's'}…',
+                      style: tt.bodyMedium?.copyWith(color: cs.onSurfaceVariant)),
+                )
+              else
+                ListTile(
+                  dense: true,
+                  leading: const Icon(Icons.refresh_rounded),
+                  title: Text(
+                      all.isEmpty
+                          ? 'No models found. Check your provider keys.'
+                          : '${all.length - ok.length} unavailable hidden · Re-check',
+                      style: tt.bodyMedium?.copyWith(color: cs.onSurfaceVariant)),
+                  onTap: () => health?.check(all, force: true),
+                ),
+            ]),
+          ),
+        );
+      },
+    );
+  }
+}
+
 class _Bubble extends StatelessWidget {
   final TextItem item;
-  const _Bubble({required this.item});
+  final void Function(String code, String lang, {bool run})? onDeliver;
+  const _Bubble({required this.item, this.onDeliver});
 
   @override
   Widget build(BuildContext context) {
     final isUser = item.role == 'user';
     final cs = Theme.of(context).colorScheme;
-    final maxW = MediaQuery.of(context).size.width * (isUser ? 0.82 : 0.96);
+    final maxW = MediaQuery.of(context).size.width * (isUser ? 0.82 : 1.0);
 
     final content = isUser
         ? Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -766,7 +912,7 @@ class _Bubble extends StatelessWidget {
                 MarkdownBody(
                   data: item.text + (item.streaming ? ' ▍' : ''),
                   selectable: false, // selectable + builders conflict; code has copy buttons
-                  builders: {'code': CodeBlockBuilder()},
+                  builders: {'code': CodeBlockBuilder(onDeliver: onDeliver)},
                 ),
                 if (item.error != null)
                   Padding(
@@ -786,7 +932,9 @@ class _Bubble extends StatelessWidget {
                 decoration: BoxDecoration(
                     color: cs.primary, borderRadius: BorderRadius.circular(20)),
                 child: content)
-            : Glass(radius: 20, child: content),
+            // Assistant replies sit flat on the page (no bubble), full width,
+            // so text, steps and file cards read as one continuous thread.
+            : Padding(padding: const EdgeInsets.symmetric(horizontal: 2), child: content),
       ),
     );
   }

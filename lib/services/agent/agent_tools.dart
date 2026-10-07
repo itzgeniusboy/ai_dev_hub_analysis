@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import '../build_poller.dart';
+import '../deliverables.dart';
 import '../github_service.dart';
 
 /// Shown to the user before an action that leaves the device.
@@ -13,7 +14,9 @@ class ToolResult {
   final String content;
   final bool ok;
   final Stream<BuildStatus>? build; // set by trigger_build
-  const ToolResult(this.content, {this.ok = true, this.build});
+  final List<Deliverable> deliverables; // files handed to the user in chat
+  const ToolResult(this.content,
+      {this.ok = true, this.build, this.deliverables = const []});
 }
 
 /// The repo the agent works on, plus changes staged on the device.

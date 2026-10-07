@@ -20,8 +20,18 @@ class ProxyServer {
   final List<HttpServer> _servers = [];
   String bearerToken;
 
-  ProxyServer({required this.router, required this.modelIds, String? token})
-      : bearerToken = token ?? generateToken();
+  /// The embedded gateways are called by this app itself, so they must accept
+  /// the app's origin header; the public proxy must not (loop protection).
+  final bool allowAppOrigin;
+  final String label;
+
+  ProxyServer({
+    required this.router,
+    required this.modelIds,
+    String? token,
+    this.allowAppOrigin = false,
+    this.label = 'AI Dev Hub proxy',
+  }) : bearerToken = token ?? generateToken();
 
   static String generateToken() {
     final r = Random.secure();
@@ -75,7 +85,8 @@ class ProxyServer {
   /// Requests sent by this app itself (see OpenAICompatibleClient.originHeader)
   /// must never come back in: that would be a provider pointing at our own proxy.
   Middleware _loopGuard() => (inner) => (req) {
-        if (req.headers.containsKey(OpenAICompatibleClient.originHeader.toLowerCase())) {
+        if (!allowAppOrigin &&
+            req.headers.containsKey(OpenAICompatibleClient.originHeader.toLowerCase())) {
           return _json(508, {
             'error': {
               'message': "This URL is AI Dev Hub's own local proxy. Don't add it as a "
@@ -91,7 +102,7 @@ class ProxyServer {
         // Open health page so a browser test shows the server is up.
         if (req.method == 'GET' && (p.isEmpty || p == 'health' || p == 'v1' || p == 'v1/')) {
           return Response.ok(
-              'AI Dev Hub proxy is running.\n'
+              '$label is running.\n'
               'Call /v1/chat/completions or /v1/models with the header\n'
               'Authorization: Bearer <token from the Proxy screen>\n',
               headers: {'content-type': 'text/plain'});

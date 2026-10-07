@@ -3,12 +3,12 @@
   "providers": [
     {
       "id": "pollinations",
-      "name": "Pollinations (free, no key)",
+      "name": "Pollinations (free key)",
       "baseUrl": "https://gen.pollinations.ai/v1",
       "models": [
         "openai"
       ],
-      "requiresKey": false
+      "requiresKey": true
     },
     {
       "id": "openrouter",

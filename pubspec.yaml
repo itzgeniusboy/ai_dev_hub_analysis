@@ -29,6 +29,7 @@ dependencies:
   url_launcher: ^6.3.0
   file_picker: ^8.0.6
   share_plus: ^9.0.0
+  webview_flutter: ^4.9.0          # run HTML apps inline in chat
   font_awesome_flutter: ^11.0.0    # GitHub brand icon
 
 flutter:

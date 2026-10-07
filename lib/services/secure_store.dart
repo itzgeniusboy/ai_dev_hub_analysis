@@ -22,7 +22,15 @@ class SecureStore {
   Future<String?> proxyToken() => _s.read(key: 'proxy_token');
   Future<void> setProxyToken(String v) => _s.write(key: 'proxy_token', value: v);
 
+  Future<String?> gatewayToken() => _s.read(key: 'gateway_token');
+  Future<void> setGatewayToken(String v) => _s.write(key: 'gateway_token', value: v);
+
   // ---- non-secret ----
+  Future<String?> gatewayKind() async =>
+      (await SharedPreferences.getInstance()).getString('gateway_kind');
+  Future<void> setGatewayKind(String v) async =>
+      (await SharedPreferences.getInstance()).setString('gateway_kind', v);
+
   Future<String?> baseUrl(String providerId) async =>
       (await SharedPreferences.getInstance()).getString('base:$providerId');
   Future<void> setBaseUrl(String providerId, String v) async =>

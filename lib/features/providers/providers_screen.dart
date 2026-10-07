@@ -35,10 +35,11 @@ class ProvidersScreen extends StatelessWidget {
               const SizedBox(width: 10),
               Expanded(
                 child: Text(
-                  'OmniRoute and FreeLLMAPI are built in and already handle routing '
-                  'and fallback, so you don\'t need to add anything here.\n\n'
-                  'Optional: add your own API key for a provider below and it is used '
-                  'as an extra fallback after the built-in gateways.',
+                  'OmniRoute and FreeLLMAPI run inside this app (Settings > Routing '
+                  'gateway) and route across the providers below.\n\n'
+                  'They need at least one provider key to answer: free keys from '
+                  'Pollinations, Groq, Gemini or OpenRouter all work. Add as many as '
+                  'you like; the active gateway falls back between them.',
                   style: Theme.of(context).textTheme.bodyMedium,
                 ),
               ),

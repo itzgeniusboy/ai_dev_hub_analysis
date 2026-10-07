@@ -1,16 +1,8 @@
-/// Optional self-hosted gateways (OmniRoute, FreeLLMAPI).
+/// Embedded gateways (OmniRoute-style and FreeLLMAPI-style).
 ///
-/// These are NOT active unless you give them a reachable URL, because
-/// `localhost` on a phone is the phone itself and nothing listens there.
-/// Enable at build time:
-///   flutter build apk \
-///     --dart-define=OMNIROUTE_URL=https://omni.example.com/v1 \
-///     --dart-define=OMNIROUTE_KEY=sk-... \
-///     --dart-define=FREELLMAPI_URL=https://free.example.com/v1 \
-///     --dart-define=FREELLMAPI_KEY=sk-...
-///
-/// With no URLs set, chat uses the internet providers from providers.json
-/// (Pollinations works with no key; add Groq/Gemini/OpenRouter keys for more).
+/// They run inside the app on 127.0.0.1 (see local_gateway.dart), so there is
+/// nothing to configure. Exactly one is active at a time; [setActive] is
+/// called by LocalGateways whenever one starts or stops.
 class DefaultGateway {
   final String id, name, baseUrl, apiKey;
   const DefaultGateway(this.id, this.name, this.baseUrl, this.apiKey);
@@ -18,31 +10,26 @@ class DefaultGateway {
 }
 
 class DefaultProviders {
-  static const omniRoute = DefaultGateway(
-    'omniroute',
-    'OmniRoute',
-    String.fromEnvironment('OMNIROUTE_URL'),
-    String.fromEnvironment('OMNIROUTE_KEY', defaultValue: 'omniroute'),
-  );
+  static const omniRouteId = 'omniroute';
+  static const freeLlmApiId = 'freellmapi';
 
-  static const freeLlmApi = DefaultGateway(
-    'freellmapi',
-    'FreeLLMAPI',
-    String.fromEnvironment('FREELLMAPI_URL'),
-    String.fromEnvironment('FREELLMAPI_KEY', defaultValue: 'freellmapi'),
-  );
+  /// Fixed preferred ports (match the real projects' defaults).
+  static const omniRoutePort = 20128;
+  static const freeLlmApiPort = 3001;
 
-  /// Only gateways that have a URL configured.
+  static DefaultGateway? _active;
+  static void setActive(DefaultGateway? g) => _active = g;
+
+  /// The running gateway, or empty while stopped / switching.
   static List<DefaultGateway> get all =>
-      [omniRoute, freeLlmApi].where((g) => g.enabled).toList();
+      _active == null ? const [] : [_active!];
 
   static bool isDefault(String providerId) =>
-      providerId == omniRoute.id || providerId == freeLlmApi.id;
+      providerId == omniRouteId || providerId == freeLlmApiId;
 
-  static String label(String providerId) {
-    for (final g in [omniRoute, freeLlmApi]) {
-      if (g.id == providerId) return g.name;
-    }
-    return providerId;
-  }
+  static String label(String providerId) => switch (providerId) {
+        omniRouteId => 'OmniRoute',
+        freeLlmApiId => 'FreeLLMAPI',
+        _ => providerId,
+      };
 }

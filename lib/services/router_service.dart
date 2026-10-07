@@ -15,9 +15,20 @@ class RouterService {
   final OpenAICompatibleClient client;
   final List<Endpoint> Function() chain; // user's ordered targets (keys resolved)
   final Map<String, DateTime> _cooldownUntil = {};
-  final Map<String, ProviderStats> stats = {};
+  final Map<String, ProviderStats> stats;
 
-  RouterService({required this.client, required this.chain});
+  /// Optional routing policy hooks (used by the embedded OmniRoute / FreeLLMAPI
+  /// gateways): reorder the healthy targets, and observe each attempt.
+  final List<Endpoint> Function(List<Endpoint>)? order;
+  final void Function(Endpoint)? onAttempt;
+
+  RouterService({
+    required this.client,
+    required this.chain,
+    Map<String, ProviderStats>? stats,
+    this.order,
+    this.onAttempt,
+  }) : stats = stats ?? {};
 
   bool _cooling(Endpoint e) {
     final t = _cooldownUntil[e.id];
@@ -36,7 +47,7 @@ class RouterService {
   static String _short(Object err) {
     final t = err is LlmError ? err.message : '$err';
     final one = t.replaceAll(RegExp(r'\s+'), ' ').trim();
-    return one.length > 140 ? '${one.substring(0, 140)}...' : one;
+    return one.length > 300 ? '${one.substring(0, 300)}...' : one;
   }
 
   /// Forget all cool-downs (call when keys / URLs change).
@@ -80,7 +91,7 @@ class RouterService {
       throw AllProvidersFailed(
           null,
           req.model == 'auto'
-              ? 'No providers configured. Open Settings > Providers and add an API key (Groq, Gemini, OpenRouter) or enable Pollinations.'
+              ? 'No providers configured. Open Settings > Providers and add at least one API key (Groq, Gemini, OpenRouter, or a free Pollinations key).'
               : 'Model "${req.model}" is not available. Switch to Auto or pick another model.');
     }
 
@@ -92,7 +103,9 @@ class RouterService {
       targets = candidates.where((e) => !_rateLimited.contains(e.id)).toList();
     }
     final skipped = candidates.length - targets.length;
+    if (order != null) targets = order!(targets);
     for (final e in targets) {
+      onAttempt?.call(e);
       final s = stats.putIfAbsent(e.providerId, ProviderStats.new);
       final sw = Stopwatch()..start();
       final it = StreamIterator(client.streamRaw(e, req, cancel: cancel));

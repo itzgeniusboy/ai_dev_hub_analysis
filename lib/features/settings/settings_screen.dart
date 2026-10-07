@@ -10,6 +10,7 @@ import '../../core/haptics.dart';
 import '../../core/theme.dart';
 import '../../services/app_settings.dart';
 import '../../services/chat_codec.dart';
+import '../../services/local_gateway.dart';
 
 class SettingsScreen extends StatefulWidget {
   final AppSettings settings;
@@ -18,6 +19,7 @@ class SettingsScreen extends StatefulWidget {
   final VoidCallback? onOpenProviders;
   final VoidCallback? onOpenProxy;
   final VoidCallback? onOpenTerminal;
+  final LocalGateways? gateways;
   const SettingsScreen({
     super.key,
     required this.settings,
@@ -26,6 +28,7 @@ class SettingsScreen extends StatefulWidget {
     this.onOpenProviders,
     this.onOpenProxy,
     this.onOpenTerminal,
+    this.gateways,
   });
 
   @override
@@ -88,11 +91,61 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ),
       );
 
+  Widget _gatewaySection(LocalGateways g) => ListenableBuilder(
+        listenable: g,
+        builder: (ctx, _) => _section('Routing gateway', [
+          SegmentedButton<GatewayKind>(
+            segments: [
+              for (final k in GatewayKind.values)
+                ButtonSegment(value: k, label: Text(k.label)),
+            ],
+            selected: {g.kind},
+            onSelectionChanged: g.busy
+                ? null
+                : (v) {
+                    Haptics.toggle();
+                    g.switchTo(v.first);
+                  },
+          ),
+          const SizedBox(height: 8),
+          Row(children: [
+            if (g.busy)
+              const SizedBox(
+                  width: 14,
+                  height: 14,
+                  child: CircularProgressIndicator(strokeWidth: 2))
+            else
+              Icon(Icons.circle,
+                  size: 10, color: g.running ? Colors.green : Colors.red),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                g.busy
+                    ? 'Switching…'
+                    : g.running
+                        ? '${g.kind.label} running on 127.0.0.1:${g.port}'
+                        : 'Stopped',
+                style: Theme.of(ctx).textTheme.bodyMedium,
+              ),
+            ),
+          ]),
+          const SizedBox(height: 4),
+          Text(g.kind.blurb, style: Theme.of(ctx).textTheme.bodySmall),
+          if (g.error != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(g.error!,
+                  style: TextStyle(color: Theme.of(ctx).colorScheme.error)),
+            ),
+        ]),
+      );
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('Settings')),
       body: ListView(padding: const EdgeInsets.all(12), children: [
+        if (widget.gateways != null) _gatewaySection(widget.gateways!),
         _section('Appearance', [
           SegmentedButton<ThemeMode>(
             segments: const [
