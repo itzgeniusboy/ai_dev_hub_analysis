@@ -101,3 +101,20 @@ Models on free tiers often have weak tool calling, so also support a fallback: t
 ## 7. Status of the code
 
 Written against current APIs from memory and **not compiled or run** (no Flutter toolchain in my sandbox). Expect small fixes, especially the SAF package calls — check `saf_util` / `saf_stream` signatures against the pub.dev version you install. The `LocalFileService` interface is deliberately thin so you can swap in a MethodChannel if needed.
+
+## Update: zero-setup routing, Manus-style chat
+
+- `lib/services/default_providers.dart` hardcodes **OmniRoute** then **FreeLLMAPI** as the
+  built-in gateways (model `auto`). Override URLs/keys at build time with
+  `--dart-define=OMNIROUTE_URL=... OMNIROUTE_KEY=... FREELLMAPI_URL=... FREELLMAPI_KEY=...`.
+- `AppServices.rebuildChain()` always starts with those two; extra provider keys
+  (Settings > Advanced > Extra providers) are optional fallbacks after them.
+  `refreshGatewayModels()` reads `GET /models` from each gateway (5 s timeout, 60 s throttle) and
+  exposes the results as pick-only endpoints (`Endpoint.selectableOnly`), which never join "auto".
+- Model switcher lists `RouterService.available()`: configured and not cooling down.
+- Chat header: menu, model pill, GitHub icon (opens connect/repo picker), overflow (new chat, build).
+  Composer `+` sheet: upload file, upload photo, skill toggles, manage skills.
+- Side drawer: chats, Skills, Connectors (GitHub, workspace folder), Settings.
+- Skills (`skill_store.dart`) are appended to the system prompt while enabled.
+- Inference parameters (temperature, top-p, max tokens, context size) are no longer exposed.
+- Theme: text theme now follows brightness and `onSurface`/`onSurfaceVariant` are set explicitly.

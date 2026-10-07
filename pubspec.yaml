@@ -27,6 +27,7 @@ dependencies:
   url_launcher: ^6.3.0
   file_picker: ^8.0.6
   share_plus: ^9.0.0
+  font_awesome_flutter: ^10.7.0    # GitHub brand icon
 
 flutter:
   uses-material-design: true

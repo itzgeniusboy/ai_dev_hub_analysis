@@ -9,21 +9,20 @@ import '../../core/haptics.dart';
 import '../../core/theme.dart';
 import '../../services/app_settings.dart';
 import '../../services/chat_codec.dart';
-import '../../services/local_file_service.dart';
 
 class SettingsScreen extends StatefulWidget {
   final AppSettings settings;
-  final LocalFileService files;
   final Future<List<ChatSession>> Function() loadSessions;
   final Future<void> Function(List<ChatSession>) importSessions;
-  final VoidCallback? onOpenGitHub;
+  final VoidCallback? onOpenProviders;
+  final VoidCallback? onOpenProxy;
   const SettingsScreen({
     super.key,
     required this.settings,
-    required this.files,
     required this.loadSessions,
     required this.importSessions,
-    this.onOpenGitHub,
+    this.onOpenProviders,
+    this.onOpenProxy,
   });
 
   @override
@@ -33,12 +32,10 @@ class SettingsScreen extends StatefulWidget {
 class _SettingsScreenState extends State<SettingsScreen> {
   AppSettings get s => widget.settings;
   late final _prompt = TextEditingController(text: s.systemPrompt);
-  late final _maxTok = TextEditingController(text: '${s.maxTokens}');
 
   @override
   void dispose() {
     _prompt.dispose();
-    _maxTok.dispose();
     super.dispose();
   }
 
@@ -77,15 +74,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
-  Future<void> _pickWorkspace() async {
-    final dir = await widget.files.pickWorkspace();
-    if (dir != null) {
-      s.setWorkspace(dir.uri.toString());
-      Haptics.toggle();
-      setState(() {});
-    }
-  }
-
   Widget _section(String title, List<Widget> children) => Padding(
         padding: const EdgeInsets.only(bottom: 12),
         child: Glass(
@@ -96,12 +84,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ]),
         ),
       );
-
-  Widget _slider(String label, double v, double min, double max, int div,
-          ValueChanged<double> onEnd, {int digits = 2}) =>
-      _LiveSlider(
-          label: label, value: v, min: min, max: max, divisions: div,
-          digits: digits, onEnd: onEnd);
 
   @override
   Widget build(BuildContext context) {
@@ -123,9 +105,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
             },
           ),
           const SizedBox(height: 8),
-          _slider('Font size', s.fontScale, 0.85, 1.4, 11, s.setFontScale),
+          _FontSizeSlider(value: s.fontScale, onEnd: s.setFontScale),
         ]),
-        _section('Inference', [
+        _section('Assistant', [
           TextField(
             controller: _prompt,
             minLines: 2,
@@ -133,26 +115,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             decoration: const InputDecoration(labelText: 'Default system prompt'),
             onChanged: s.setSystemPrompt,
           ),
-          const SizedBox(height: 8),
-          _slider('Temperature', s.temperature, 0, 2, 20, s.setTemperature),
-          _slider('Top-P', s.topP, 0.05, 1, 19, s.setTopP),
-          TextField(
-            controller: _maxTok,
-            keyboardType: TextInputType.number,
-            decoration: const InputDecoration(labelText: 'Max tokens'),
-            onChanged: (v) {
-              final n = int.tryParse(v);
-              if (n != null && n > 0) s.setMaxTokens(n);
-            },
-          ),
-          _slider('Context (recent messages sent)', s.contextMessages.toDouble(), 2, 100,
-              98, (v) => s.setContextMessages(v.round()), digits: 0),
-        ]),
-        _section('GitHub', [
-          FilledButton.tonal(
-              onPressed: widget.onOpenGitHub, child: const Text('Connect & choose repo')),
-        ]),
-        _section('Agent tools', [
+          const SizedBox(height: 4),
           SwitchListTile(
             contentPadding: EdgeInsets.zero,
             title: const Text('Let the model work on my repo'),
@@ -166,25 +129,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
             },
           ),
         ]),
-        _section('Workspace', [
-          Text(s.workspaceUri == null
-              ? 'No folder selected. Grant one folder; the app can only touch files inside it.'
-              : Uri.decodeFull(s.workspaceUri!),
-              style: Theme.of(context).textTheme.bodySmall),
-          const SizedBox(height: 8),
-          Wrap(spacing: 8, children: [
-            FilledButton.tonal(
-                onPressed: _pickWorkspace,
-                child: Text(s.workspaceUri == null ? 'Choose folder' : 'Change folder')),
-            if (s.workspaceUri != null)
-              TextButton(
-                  onPressed: () {
-                    s.setWorkspace(null);
-                    setState(() {});
-                  },
-                  child: const Text('Forget')),
-          ]),
-        ]),
         _section('Chats', [
           Wrap(spacing: 8, runSpacing: 8, children: [
             FilledButton.tonal(onPressed: () => _export(false), child: const Text('Export JSON')),
@@ -192,38 +136,53 @@ class _SettingsScreenState extends State<SettingsScreen> {
             FilledButton.tonal(onPressed: _import, child: const Text('Import JSON')),
           ]),
         ]),
+        _section('Advanced', [
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: const Icon(Icons.hub_outlined),
+            title: const Text('Extra providers'),
+            subtitle: const Text('Optional. OmniRoute and FreeLLMAPI are built in.'),
+            trailing: const Icon(Icons.chevron_right_rounded),
+            onTap: widget.onOpenProviders,
+          ),
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: const Icon(Icons.dns_outlined),
+            title: const Text('Local proxy server'),
+            subtitle: const Text('Share the router with other apps on this device.'),
+            trailing: const Icon(Icons.chevron_right_rounded),
+            onTap: widget.onOpenProxy,
+          ),
+        ]),
       ]),
     );
   }
 }
 
-/// Slider that shows the value live while dragging and persists on release.
-class _LiveSlider extends StatefulWidget {
-  final String label;
-  final double value, min, max;
-  final int divisions, digits;
+/// Font-size slider: shows the value live while dragging, persists on release.
+class _FontSizeSlider extends StatefulWidget {
+  final double value;
   final ValueChanged<double> onEnd;
-  const _LiveSlider({required this.label, required this.value, required this.min,
-      required this.max, required this.divisions, required this.digits, required this.onEnd});
+  const _FontSizeSlider({required this.value, required this.onEnd});
 
   @override
-  State<_LiveSlider> createState() => _LiveSliderState();
+  State<_FontSizeSlider> createState() => _FontSizeSliderState();
 }
 
-class _LiveSliderState extends State<_LiveSlider> {
+class _FontSizeSliderState extends State<_FontSizeSlider> {
   late double _v = widget.value;
 
   @override
   Widget build(BuildContext context) => Column(children: [
         Row(children: [
-          Expanded(child: Text(widget.label)),
-          Text(_v.toStringAsFixed(widget.digits)),
+          const Expanded(child: Text('Font size')),
+          Text(_v.toStringAsFixed(2)),
         ]),
         Slider(
           value: _v,
-          min: widget.min,
-          max: widget.max,
-          divisions: widget.divisions,
+          min: 0.85,
+          max: 1.4,
+          divisions: 11,
           onChanged: (x) => setState(() => _v = x),
           onChangeEnd: widget.onEnd,
         ),

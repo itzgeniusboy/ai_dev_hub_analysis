@@ -1,3 +1,5 @@
+import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:archive/archive.dart';
@@ -13,12 +15,15 @@ import 'features/chat/chat_screen.dart';
 import 'features/github/github_screen.dart';
 import 'features/providers/providers_screen.dart';
 import 'features/proxy/proxy_screen.dart';
+import 'features/settings/connectors_screen.dart';
 import 'features/settings/settings_screen.dart';
+import 'features/settings/skills_screen.dart';
 import 'services/agent/agent_runner.dart';
 import 'services/agent/agent_tools.dart';
 import 'services/app_settings.dart';
 import 'services/build_poller.dart';
 import 'services/chat_codec.dart';
+import 'services/default_providers.dart';
 import 'services/github_service.dart';
 import 'services/local_file_service.dart';
 import 'services/openai_compatible_client.dart';
@@ -27,6 +32,7 @@ import 'services/proxy_server.dart';
 import 'services/router_service.dart';
 import 'services/secure_store.dart';
 import 'services/session_store.dart';
+import 'services/skill_store.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -47,6 +53,7 @@ class AppServices {
   final settings = AppSettings();
   final files = LocalFileService();
   final sessions = SessionStore();
+  final skills = SkillStore();
 
   late final RouterService router;
   late final ProxyServer proxyServer;
@@ -80,12 +87,14 @@ class AppServices {
   static Future<AppServices> create() async {
     final a = AppServices();
     await a.settings.load();
+    await a.skills.load();
     a.providers = await ProviderRegistry(registryUrl).load();
     a.router = RouterService(client: a.client, chain: () => a.chain);
     a.proxyServer =
         ProxyServer(router: a.router, modelIds: () => [for (final e in a.chain) e.id]);
     a.proxy = ProxyController(a.proxyServer, a.store);
     await a.rebuildChain();
+    unawaited(a.refreshGatewayModels()); // live model list, never blocks startup
 
     // Restore GitHub session if we have a token + repo.
     final token = await a.store.githubToken();
@@ -97,19 +106,52 @@ class AppServices {
     return a;
   }
 
-  /// Resolve saved keys + mode into an ordered fallback chain.
-  /// Gateway mode: only the Custom provider, model "auto" (the gateway routes).
-  /// Direct mode: every provider that has a key (Custom last, if its URL is set).
+  // Models the built-in gateways reported via GET /models (id -> models).
+  final Map<String, List<String>> _discovered = {};
+  DateTime? _lastRefresh;
+
+  /// Ask OmniRoute / FreeLLMAPI what they serve right now. Throttled, short
+  /// timeout, and failures are silent: the always-present "auto" targets keep
+  /// working even when the listing endpoint is down.
+  Future<void> refreshGatewayModels({bool force = false}) async {
+    final last = _lastRefresh;
+    if (!force && last != null && DateTime.now().difference(last) < const Duration(seconds: 60)) {
+      return;
+    }
+    _lastRefresh = DateTime.now();
+    await Future.wait([
+      for (final g in DefaultProviders.all)
+        () async {
+          try {
+            final ep = Endpoint(
+                providerId: g.id, baseUrl: g.baseUrl, apiKey: g.apiKey, model: 'auto');
+            final ids = await client.listModels(ep).timeout(const Duration(seconds: 5));
+            _discovered[g.id] = ids.where((m) => m != 'auto').take(40).toList();
+          } catch (_) {
+            _discovered.remove(g.id); // unreachable: don't offer stale models
+          }
+        }(),
+    ]);
+    await rebuildChain();
+  }
+
+  /// Ordered fallback chain:
+  ///  1. OmniRoute "auto"  2. FreeLLMAPI "auto"  (built in, zero setup)
+  ///  3. any extra provider the user added a key for (optional)
+  /// Models the gateways report are appended as pick-only entries, so the model
+  /// switcher can pin one without lengthening the automatic fallback chain.
   Future<void> rebuildChain() async {
-    final mode = await store.mode();
-    final out = <Endpoint>[];
+    final out = <Endpoint>[
+      for (final g in DefaultProviders.all)
+        Endpoint(providerId: g.id, baseUrl: g.baseUrl, apiKey: g.apiKey, model: 'auto'),
+    ];
     final ordered = [
       ...providers.where((p) => p.id != 'custom'),
       ...providers.where((p) => p.id == 'custom'),
     ];
     for (final p in ordered) {
+      if (DefaultProviders.isDefault(p.id)) continue;
       final isCustom = p.id == 'custom';
-      if (mode == RouteMode.gateway && !isCustom) continue;
       final key = await store.apiKey(p.id) ?? '';
       final base = isCustom ? (await store.baseUrl(p.id) ?? p.baseUrl) : p.baseUrl;
       if (base.isEmpty) continue;
@@ -118,6 +160,16 @@ class AppServices {
       final models = isCustom ? ['auto'] : p.models;
       for (final m in models) {
         out.add(Endpoint(providerId: p.id, baseUrl: base, apiKey: key, model: m));
+      }
+    }
+    for (final g in DefaultProviders.all) {
+      for (final m in _discovered[g.id] ?? const <String>[]) {
+        out.add(Endpoint(
+            providerId: g.id,
+            baseUrl: g.baseUrl,
+            apiKey: g.apiKey,
+            model: m,
+            selectableOnly: true));
       }
     }
     chain = out;
@@ -157,7 +209,7 @@ class HomeShell extends StatefulWidget {
 
 class _HomeShellState extends State<HomeShell> {
   AppServices get app => widget.app;
-  int _tab = 0;
+  final _scaffoldKey = GlobalKey<ScaffoldState>();
   List<ChatSession> _sessions = [];
   int _current = 0;
   bool _ready = false;
@@ -187,49 +239,129 @@ class _HomeShellState extends State<HomeShell> {
     _persist();
   }
 
-  void _openSessions() {
-    showModalBottomSheet(
-      context: context,
-      showDragHandle: true,
-      builder: (ctx) => SafeArea(
-        child: ListView(shrinkWrap: true, children: [
-          ListTile(
-            leading: const Icon(Icons.add_rounded),
-            title: const Text('New chat'),
-            onTap: () {
-              Navigator.pop(ctx);
-              if (_sessions[_current].messages.isNotEmpty) {
-                setState(() {
-                  _sessions.add(_newSession());
-                  _current = _sessions.length - 1;
-                });
-                _persist();
-              }
-            },
+  void _newChat() {
+    if (_sessions[_current].messages.isEmpty) return;
+    setState(() {
+      _sessions.add(_newSession());
+      _current = _sessions.length - 1;
+    });
+    _persist();
+  }
+
+  void _deleteChat(int i) {
+    setState(() {
+      _sessions.removeAt(i);
+      if (_sessions.isEmpty) _sessions.add(_newSession());
+      _current = _current.clamp(0, _sessions.length - 1);
+      if (i < _current) _current--;
+    });
+    _persist();
+  }
+
+  void _push(Widget screen) =>
+      Navigator.of(context).push(MaterialPageRoute(builder: (_) => screen));
+
+  /// Drawer entries close the drawer first, then navigate.
+  void _go(VoidCallback action) {
+    Navigator.of(context).pop();
+    action();
+  }
+
+  void _openSkills() => _push(SkillsScreen(store: app.skills));
+
+  void _openConnectors() => _push(ConnectorsScreen(
+        settings: app.settings,
+        files: app.files,
+        githubConnected: app.gh != null,
+        repoLabel: app.selection == null ? null : app.selection!.repo,
+        onOpenGitHub: _openGitHub,
+      ));
+
+  void _openProviders() => _push(ProvidersScreen(
+        providers: app.providers,
+        store: app.store,
+        client: app.client,
+        stats: () => app.router.stats,
+      ));
+
+  void _openProxy() => _push(ProxyScreen(controller: app.proxy));
+
+  void _openSettings() => _push(SettingsScreen(
+        settings: app.settings,
+        loadSessions: () async => _sessions,
+        importSessions: (list) async {
+          setState(() => _sessions.addAll(list));
+          await _persist();
+        },
+        onOpenProviders: _openProviders,
+        onOpenProxy: _openProxy,
+      ));
+
+  Widget _drawer() {
+    final cs = Theme.of(context).colorScheme;
+    return Drawer(
+      child: SafeArea(
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
+            child: Text('AI Dev Hub', style: Theme.of(context).textTheme.titleLarge),
           ),
-          for (var i = _sessions.length - 1; i >= 0; i--)
-            ListTile(
-              selected: i == _current,
-              title: Text(_sessions[i].title, overflow: TextOverflow.ellipsis),
-              subtitle: Text('${_sessions[i].messages.length} messages'),
-              trailing: IconButton(
-                icon: const Icon(Icons.delete_outline_rounded),
-                onPressed: () {
-                  Navigator.pop(ctx);
-                  setState(() {
-                    _sessions.removeAt(i);
-                    if (_sessions.isEmpty) _sessions.add(_newSession());
-                    _current = _current.clamp(0, _sessions.length - 1);
-                    if (i < _current) _current--;
-                  });
-                  _persist();
-                },
-              ),
-              onTap: () {
-                Navigator.pop(ctx);
-                setState(() => _current = i);
-              },
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            child: FilledButton.tonalIcon(
+              onPressed: () => _go(_newChat),
+              icon: const Icon(Icons.add_rounded),
+              label: const Text('New chat'),
             ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 16, 20, 4),
+            child: Text('Chats',
+                style: Theme.of(context)
+                    .textTheme
+                    .labelMedium
+                    ?.copyWith(color: cs.onSurfaceVariant)),
+          ),
+          Expanded(
+            child: ListView(padding: EdgeInsets.zero, children: [
+              for (var i = _sessions.length - 1; i >= 0; i--)
+                ListTile(
+                  dense: true,
+                  selected: i == _current,
+                  selectedTileColor: cs.primary.withOpacity(0.14),
+                  title: Text(_sessions[i].title, overflow: TextOverflow.ellipsis),
+                  trailing: IconButton(
+                    tooltip: 'Delete chat',
+                    icon: const Icon(Icons.delete_outline_rounded, size: 20),
+                    onPressed: () {
+                      Navigator.of(context).pop();
+                      _deleteChat(i);
+                    },
+                  ),
+                  onTap: () {
+                    Navigator.of(context).pop();
+                    setState(() => _current = i);
+                  },
+                ),
+            ]),
+          ),
+          const Divider(height: 1),
+          ListTile(
+            leading: const Icon(Icons.auto_awesome_outlined),
+            title: const Text('Skills'),
+            onTap: () => _go(_openSkills),
+          ),
+          ListTile(
+            leading: const Icon(Icons.extension_outlined),
+            title: const Text('Connectors'),
+            onTap: () => _go(_openConnectors),
+          ),
+          ListTile(
+            leading: const Icon(Icons.settings_outlined),
+            title: const Text('Settings'),
+            onTap: () => _go(_openSettings),
+          ),
+          const SizedBox(height: 8),
         ]),
       ),
     );
@@ -298,6 +430,33 @@ class _HomeShellState extends State<HomeShell> {
     }
   }
 
+  Future<Attachment?> _attachPhoto() async {
+    try {
+      final r = await FilePicker.platform.pickFiles(type: FileType.image);
+      final path = r?.files.single.path;
+      if (path == null) return null;
+      final f = File(path);
+      if (await f.length() > 4 * 1024 * 1024) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Photo too large (limit 4 MB)')));
+        }
+        return null;
+      }
+      final name = path.split('/').last;
+      final ext = name.contains('.') ? name.split('.').last.toLowerCase() : 'jpeg';
+      final mime = switch (ext) {
+        'png' => 'image/png',
+        'gif' => 'image/gif',
+        'webp' => 'image/webp',
+        _ => 'image/jpeg',
+      };
+      return Attachment(name, 'data:$mime;base64,${base64Encode(await f.readAsBytes())}');
+    } catch (_) {
+      return null;
+    }
+  }
+
   void _openGitHub() => Navigator.of(context).push(MaterialPageRoute(
         builder: (_) => GitHubScreen(
           store: app.store,
@@ -305,6 +464,7 @@ class _HomeShellState extends State<HomeShell> {
             app.gh = gh;
             app.poller = BuildPoller(gh);
             app.selection = sel;
+            if (mounted) setState(() {});
           },
         ),
       ));
@@ -318,57 +478,33 @@ class _HomeShellState extends State<HomeShell> {
     final session = _sessions[_current];
 
     return Scaffold(
-      body: IndexedStack(index: _tab, children: [
-        ChatScreen(
+      key: _scaffoldKey,
+      drawer: _drawer(),
+      body: ListenableBuilder(
+        listenable: app.skills,
+        builder: (_, __) => ChatScreen(
           key: ValueKey(session.created.toIso8601String()),
           router: app.router,
-          modelChoices: ['auto', for (final e in app.chain) e.id],
+          models: app.router.available,
+          onModelMenuOpen: () =>
+              app.refreshGatewayModels().then((_) => mounted ? setState(() {}) : null),
           systemPrompt: s.systemPrompt,
-          temperature: s.temperature,
-          topP: s.topP,
-          maxTokens: s.maxTokens,
-          contextMessages: s.contextMessages,
+          skills: app.skills,
+          onManageSkills: _openSkills,
+          contextMessages: AppSettings.contextMessages,
           initial: session.messages,
           onMessagesChanged: _onMessages,
-          onOpenSessions: _openSessions,
+          onOpenMenu: () => _scaffoldKey.currentState?.openDrawer(),
+          onNewChat: _newChat,
+          onOpenGitHub: _openGitHub,
+          githubConnected: app.gh != null,
           onTriggerBuild: _triggerBuild,
           onDownloadArtifact: _downloadArtifact,
           onPickFile: _attachFile,
+          onPickPhoto: _attachPhoto,
           toolsEnabled: s.toolsEnabled,
           agentFactory: app.makeAgent,
         ),
-        ProvidersScreen(
-          providers: app.providers,
-          store: app.store,
-          client: app.client,
-          stats: () => app.router.stats,
-          onModeChanged: (_) => app.rebuildChain().then((_) => setState(() {})),
-        ),
-        ProxyScreen(controller: app.proxy),
-        SettingsScreen(
-          settings: s,
-          files: app.files,
-          loadSessions: () async => _sessions,
-          importSessions: (list) async {
-            setState(() => _sessions.addAll(list));
-            await _persist();
-          },
-          onOpenGitHub: _openGitHub,
-        ),
-      ]),
-      bottomNavigationBar: NavigationBar(
-        selectedIndex: _tab,
-        onDestinationSelected: (i) async {
-          // Keys may have changed on the Providers tab: refresh the chain on every switch.
-          await app.rebuildChain();
-          setState(() => _tab = i);
-        },
-        destinations: const [
-          NavigationDestination(icon: Icon(Icons.chat_bubble_outline_rounded), label: 'Chat'),
-          NavigationDestination(icon: Icon(Icons.hub_outlined), label: 'Providers'),
-          NavigationDestination(icon: Icon(Icons.dns_outlined), label: 'Proxy'),
-          NavigationDestination(icon: Icon(Icons.settings_outlined), label: 'Settings'),
-        ],
       ),
     );
   }

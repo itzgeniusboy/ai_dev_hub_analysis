@@ -8,8 +8,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../core/models.dart';
 import 'openai_compatible_client.dart';
 
-/// Direct-mode router: ordered fallback across the providers the user has keys for.
-/// (Gateway mode = just point a Custom endpoint at OmniRoute / FreeLLMAPI with model "auto".)
+/// Router: ordered fallback across the built-in gateways (OmniRoute, then
+/// FreeLLMAPI) followed by any extra provider keys the user has added.
 class RouterService {
   final OpenAICompatibleClient client;
   final List<Endpoint> Function() chain; // user's ordered targets (keys resolved)
@@ -26,6 +26,10 @@ class RouterService {
   void _cool(Endpoint e, Duration d) =>
       _cooldownUntil[e.id] = DateTime.now().add(d);
 
+  /// Targets that are configured AND not cooling down after an error — i.e.
+  /// the models the user can actually use right now.
+  List<Endpoint> available() => chain().where((e) => !_cooling(e)).toList();
+
   /// Streams raw SSE payloads from the first healthy target.
   /// Fails over ONLY before the first payload is emitted — after that, switching
   /// providers would duplicate/garble output, so the error is rethrown instead.
@@ -33,15 +37,16 @@ class RouterService {
     Object? lastError;
     final candidates = chain().where((e) {
       // A specific model request pins to that model; "auto" uses the whole chain.
-      return req.model == 'auto' || e.model == req.model || e.id == req.model;
+      if (req.model == 'auto') return !e.selectableOnly;
+      return e.id == req.model || e.model == req.model;
     }).toList();
 
     if (candidates.isEmpty) {
       throw AllProvidersFailed(
           null,
           req.model == 'auto'
-              ? 'No providers configured. Add an API key in the Providers tab.'
-              : 'No provider matches "${req.model}". Pick "auto" or add its key in Providers.');
+              ? 'No models are reachable right now. Check your connection and try again.'
+              : 'Model "${req.model}" is not available. Switch to Auto or pick another model.');
     }
 
     var skipped = 0;

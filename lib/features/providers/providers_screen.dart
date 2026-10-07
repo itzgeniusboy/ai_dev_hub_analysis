@@ -7,12 +7,11 @@ import '../../services/openai_compatible_client.dart';
 import '../../services/router_service.dart';
 import '../../services/secure_store.dart';
 
-class ProvidersScreen extends StatefulWidget {
+class ProvidersScreen extends StatelessWidget {
   final List<ProviderDef> providers; // from ProviderRegistry.load()
   final SecureStore store;
   final OpenAICompatibleClient client;
   final Map<String, ProviderStats> Function() stats; // router.stats
-  final ValueChanged<RouteMode>? onModeChanged;
 
   const ProvidersScreen({
     super.key,
@@ -20,68 +19,40 @@ class ProvidersScreen extends StatefulWidget {
     required this.store,
     required this.client,
     required this.stats,
-    this.onModeChanged,
   });
 
   @override
-  State<ProvidersScreen> createState() => _ProvidersScreenState();
-}
-
-class _ProvidersScreenState extends State<ProvidersScreen> {
-  RouteMode _mode = RouteMode.direct;
-
-  @override
-  void initState() {
-    super.initState();
-    widget.store.mode().then((m) => mounted ? setState(() => _mode = m) : null);
-  }
-
-  @override
   Widget build(BuildContext context) {
-    // In gateway mode only the Custom provider matters (it points at OmniRoute/FreeLLMAPI).
-    final shown = _mode == RouteMode.gateway
-        ? widget.providers.where((p) => p.id == 'custom').toList()
-        : widget.providers;
-
     return Scaffold(
-      appBar: AppBar(title: const Text('Providers')),
+      appBar: AppBar(title: const Text('Extra providers')),
       body: ListView(
         padding: const EdgeInsets.all(12),
         children: [
           Glass(
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              SegmentedButton<RouteMode>(
-                segments: const [
-                  ButtonSegment(value: RouteMode.direct, label: Text('Direct')),
-                  ButtonSegment(value: RouteMode.gateway, label: Text('Gateway')),
-                ],
-                selected: {_mode},
-                onSelectionChanged: (s) async {
-                  Haptics.toggle();
-                  setState(() => _mode = s.first);
-                  await widget.store.setMode(s.first);
-                  widget.onModeChanged?.call(s.first);
-                },
-              ),
-              const SizedBox(height: 8),
-              Text(
-                _mode == RouteMode.direct
-                    ? 'The app routes across your provider keys and falls back on errors.'
-                    : 'Use a self-hosted OmniRoute (…:20128/v1) or FreeLLMAPI (…:3001/v1) as '
-                        'the Custom provider with model "auto". The gateway does the routing.',
-                style: Theme.of(context).textTheme.bodySmall,
+            child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Icon(Icons.check_circle_rounded,
+                  color: Theme.of(context).colorScheme.primary),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  'OmniRoute and FreeLLMAPI are built in and already handle routing '
+                  'and fallback, so you don\'t need to add anything here.\n\n'
+                  'Optional: add your own API key for a provider below and it is used '
+                  'as an extra fallback after the built-in gateways.',
+                  style: Theme.of(context).textTheme.bodyMedium,
+                ),
               ),
             ]),
           ),
           const SizedBox(height: 12),
-          for (final p in shown)
+          for (final p in providers)
             Padding(
               padding: const EdgeInsets.only(bottom: 12),
               child: _ProviderTile(
                 def: p,
-                store: widget.store,
-                client: widget.client,
-                stats: () => widget.stats()[p.id],
+                store: store,
+                client: client,
+                stats: () => stats()[p.id],
               ),
             ),
         ],

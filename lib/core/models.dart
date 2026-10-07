@@ -6,12 +6,17 @@ class Endpoint {
   final String model;
   final Map<String, String> extraHeaders;
 
+  /// Discovered models the user may pick explicitly; never part of the
+  /// automatic ("auto") fallback chain.
+  final bool selectableOnly;
+
   const Endpoint({
     required this.providerId,
     required this.baseUrl,
     required this.apiKey,
     required this.model,
     this.extraHeaders = const {},
+    this.selectableOnly = false,
   });
 
   String get id => '$providerId/$model';
