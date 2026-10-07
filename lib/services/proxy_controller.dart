@@ -1,5 +1,6 @@
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 
+import 'keep_alive.dart';
 import 'proxy_server.dart';
 import 'secure_store.dart';
 
@@ -39,22 +40,22 @@ class ProxyController {
     }
   }
 
+  bool _held = false;
+
   Future<void> start() async {
-    // Android 13+: notification permission is needed for the service notice.
-    final perm = await FlutterForegroundTask.checkNotificationPermission();
-    if (perm != NotificationPermission.granted) {
-      await FlutterForegroundTask.requestNotificationPermission();
-    }
     await server.start(port: port, lan: lan);
-    await FlutterForegroundTask.startService(
-      notificationTitle: 'AI proxy running',
-      notificationText: lan ? 'Listening on Wi-Fi :$port' : 'Listening on localhost :$port',
-    );
+    if (!_held) {
+      _held = true;
+      await KeepAlive.acquire(lan ? 'Proxy listening on Wi-Fi :$port' : 'Proxy listening on localhost :$port');
+    }
   }
 
   Future<void> stop() async {
     await server.stop();
-    await FlutterForegroundTask.stopService();
+    if (_held) {
+      _held = false;
+      await KeepAlive.release();
+    }
   }
 
   Future<String> regenerateToken() async {

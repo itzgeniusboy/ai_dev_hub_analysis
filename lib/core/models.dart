@@ -82,11 +82,15 @@ class FatalError extends LlmError {
 class AllProvidersFailed implements Exception {
   final Object? lastError;
   final String? reason; // set when no request was actually attempted
-  const AllProvidersFailed(this.lastError, [this.reason]);
+  final String? details; // one line per provider: what failed and when it retries
+  const AllProvidersFailed(this.lastError, [this.reason, this.details]);
   @override
-  String toString() => lastError == null && reason != null
-      ? reason!
-      : 'All providers failed. Last error: $lastError';
+  String toString() {
+    final head = lastError == null && reason != null
+        ? reason!
+        : 'All providers failed. Last error: $lastError';
+    return details == null || details!.isEmpty ? head : '$head\n$details';
+  }
 }
 
 class ProviderStats {

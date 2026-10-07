@@ -49,7 +49,15 @@ class AgentRunner {
   final RouterService router;
   final Toolkit toolkit;
   final int maxSteps;
-  AgentRunner({required this.router, required this.toolkit, this.maxSteps = 10});
+  final Duration? maxDuration; // wall-clock budget for the whole run
+  final String? modeNote; // extra system instructions for Build / Autonomous
+  AgentRunner({
+    required this.router,
+    required this.toolkit,
+    this.maxSteps = 10,
+    this.maxDuration,
+    this.modeNote,
+  });
 
   bool _cancelled = false;
   void cancel() => _cancelled = true;
@@ -63,17 +71,24 @@ class AgentRunner {
     int? maxTokens,
   }) async* {
     _cancelled = false;
+    final started = DateTime.now();
+    final note = modeNote == null ? toolkit.systemNote : '${toolkit.systemNote}\n\n$modeNote';
     final convo = <Map<String, dynamic>>[
       for (final m in messages) Map<String, dynamic>.of(m),
     ];
     if (convo.isNotEmpty && convo.first['role'] == 'system') {
-      convo.first['content'] = '${convo.first['content']}\n\n${toolkit.systemNote}';
+      convo.first['content'] = '${convo.first['content']}\n\n$note';
     } else {
-      convo.insert(0, {'role': 'system', 'content': toolkit.systemNote});
+      convo.insert(0, {'role': 'system', 'content': note});
     }
 
     for (var step = 0; step < maxSteps; step++) {
       if (_cancelled) return;
+      final limit = maxDuration;
+      if (limit != null && DateTime.now().difference(started) > limit) {
+        yield AgentNotice('Time budget of ${limit.inMinutes} min reached. Say "continue" to keep going.');
+        return;
+      }
       final req = ChatRequest(
         messages: convo,
         model: model,

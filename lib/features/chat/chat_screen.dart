@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 
+import '../../core/chat_mode.dart';
 import '../../core/haptics.dart';
 import '../../core/models.dart';
 import '../../core/theme.dart';
@@ -14,6 +15,7 @@ import '../../services/agent/agent_tools.dart' show ApprovalRequest;
 import '../../services/build_poller.dart';
 import '../../services/chat_codec.dart';
 import '../../services/default_providers.dart';
+import '../../services/keep_alive.dart';
 import '../../services/router_service.dart';
 import '../../services/skill_store.dart';
 import 'build_card.dart';
@@ -80,7 +82,7 @@ class ChatScreen extends StatefulWidget {
   /// Agent mode: when [toolsEnabled], each send goes through the tool loop
   /// built by [agentFactory] (null return = tools unavailable, plain chat).
   final bool toolsEnabled;
-  final AgentRunner? Function()? agentFactory;
+  final AgentRunner? Function(ChatMode mode)? agentFactory;
 
   const ChatScreen({
     super.key,
@@ -116,11 +118,24 @@ class _ChatScreenState extends State<ChatScreen> {
   StreamSubscription<dynamic>? _sub;
   AgentRunner? _agent;
   String _model = 'auto';
+  late ChatMode _mode = widget.toolsEnabled ? ChatMode.build : ChatMode.chat;
+  bool _kaHeld = false;
+
+  void _keepAlive(bool on, [String text = 'Working...']) {
+    if (on && !_kaHeld) {
+      _kaHeld = true;
+      KeepAlive.acquire(text);
+    } else if (!on && _kaHeld) {
+      _kaHeld = false;
+      KeepAlive.release();
+    }
+  }
   final _pending = <Attachment>[];
   bool get _busy => _sub != null;
 
   @override
   void dispose() {
+    _keepAlive(false);
     _agent?.cancel();
     _sub?.cancel();
     _input.dispose();
@@ -297,11 +312,11 @@ class _ChatScreenState extends State<ChatScreen> {
     });
     _scrollDown();
 
-    final agent = widget.toolsEnabled ? widget.agentFactory?.call() : null;
-    if (widget.toolsEnabled && agent == null) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+    final agent = _mode.usesTools ? widget.agentFactory?.call(_mode) : null;
+    if (_mode.usesTools && agent == null) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
           content: Text(
-              'Agent tools need a GitHub repo (tap the GitHub icon) Device file access or Terminal in Settings. Sending as plain chat.')));
+              '${_mode.label} mode needs a tool source: GitHub repo (tap the GitHub icon), Device file access or Terminal in Settings. Sending as plain chat.')));
     }
     if (agent != null) {
       _runAgent(agent, reply);
@@ -345,6 +360,7 @@ class _ChatScreenState extends State<ChatScreen> {
   Future<bool> _approve(ApprovalRequest r) async {
     if (!mounted) return false;
     Haptics.toggle();
+    KeepAlive.update('Waiting for your approval: ${r.title}');
     final ok = await showDialog<bool>(
       context: context,
       barrierDismissible: false,
@@ -371,6 +387,7 @@ class _ChatScreenState extends State<ChatScreen> {
   /// appended to the list in the order they happen.
   void _runAgent(AgentRunner agent, TextItem first) {
     _agent = agent;
+    _keepAlive(true, '${_mode.label} task running');
     TextItem? cur = first; // bubble currently receiving streamed text
     var usedTools = false;
 
@@ -388,6 +405,7 @@ class _ChatScreenState extends State<ChatScreen> {
       }
       _agent = null;
       _sub = null;
+      _keepAlive(false);
     }
 
     _sub = agent
@@ -410,6 +428,7 @@ class _ChatScreenState extends State<ChatScreen> {
             _scrollDown();
           case AgentToolStart(:final id, :final name, :final label):
             usedTools = true;
+            KeepAlive.update(label);
             setState(() {
               final c = cur;
               if (c != null) {
@@ -478,6 +497,7 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _stop() {
+    _keepAlive(false);
     _agent?.cancel();
     _agent = null;
     _sub?.cancel();
@@ -519,6 +539,11 @@ class _ChatScreenState extends State<ChatScreen> {
                   icon: const Icon(Icons.menu_rounded),
                   onPressed: widget.onOpenMenu),
               title: _ModelPicker(
+                mode: _mode,
+                onMode: (m) {
+                  Haptics.toggle();
+                  setState(() => _mode = m);
+                },
                 value: _model,
                 choices: () => widget.models(),
                 onOpen: widget.onModelMenuOpen,
@@ -626,12 +651,16 @@ String modelLabel(String id) {
 /// Compact model switcher. Lists only models that are configured and not
 /// currently failing; the list is rebuilt every time the menu opens.
 class _ModelPicker extends StatelessWidget {
+  final ChatMode mode;
+  final ValueChanged<ChatMode> onMode;
   final String value;
   final List<Endpoint> Function() choices;
   final VoidCallback? onOpen;
   final ValueChanged<String> onChanged;
   const _ModelPicker(
-      {required this.value,
+      {required this.mode,
+      required this.onMode,
+      required this.value,
       required this.choices,
       required this.onChanged,
       this.onOpen});
@@ -642,9 +671,24 @@ class _ModelPicker extends StatelessWidget {
     return PopupMenuButton<String>(
       tooltip: 'Switch model',
       onOpened: onOpen,
-      onSelected: onChanged,
+      onSelected: (v) => v.startsWith('mode:')
+          ? onMode(ChatMode.values.firstWhere((m) => 'mode:${m.name}' == v))
+          : onChanged(v),
       constraints: const BoxConstraints(maxWidth: 320),
       itemBuilder: (_) => [
+        for (final m in ChatMode.values)
+          PopupMenuItem(
+            value: 'mode:${m.name}',
+            child: Row(children: [
+              Expanded(
+                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text(m.label),
+                Text(m.hint, style: Theme.of(context).textTheme.labelSmall?.copyWith(color: cs.onSurfaceVariant)),
+              ])),
+              if (mode == m) const Icon(Icons.check_rounded, size: 18),
+            ]),
+          ),
+        const PopupMenuDivider(),
         PopupMenuItem(
           value: 'auto',
           child: Row(children: [
@@ -672,7 +716,7 @@ class _ModelPicker extends StatelessWidget {
         ),
         child: Row(mainAxisSize: MainAxisSize.min, children: [
           Flexible(
-              child: Text(modelLabel(value),
+              child: Text('${mode.label} · ${modelLabel(value)}',
                   overflow: TextOverflow.ellipsis,
                   style: Theme.of(context)
                       .textTheme

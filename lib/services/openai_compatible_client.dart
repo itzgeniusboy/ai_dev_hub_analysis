@@ -24,13 +24,24 @@ class OpenAICompatibleClient {
               receiveTimeout: const Duration(seconds: 120),
             ));
 
-  static String _join(String base, String path) =>
-      '${base.replaceAll(RegExp(r'/+$'), '')}/$path';
+  /// Marks every request this app sends. The local proxy refuses requests that
+  /// carry it, so pointing a provider at the app's own proxy cannot loop.
+  static const originHeader = 'X-AI-Dev-Hub-Origin';
+
+  /// Trim, drop a pasted "/chat/completions" or "/models" tail and trailing slashes.
+  static String normalizeBase(String base) => base
+      .trim()
+      .replaceAll(RegExp(r'/(chat/completions|models)/*$'), '')
+      .replaceAll(RegExp(r'/+$'), '');
+
+  static String _join(String base, String path) => '${normalizeBase(base)}/$path';
 
   Options _opts(Endpoint e, {bool stream = false}) => Options(
         responseType: stream ? ResponseType.stream : ResponseType.json,
         headers: {
-          'Authorization': 'Bearer ${e.apiKey}',
+          // No key -> no Authorization header (an empty "Bearer " gets rejected).
+          if (e.apiKey.trim().isNotEmpty) 'Authorization': 'Bearer ${e.apiKey.trim()}',
+          originHeader: '1',
           'Content-Type': 'application/json',
           if (stream) 'Accept': 'text/event-stream',
           ...e.extraHeaders,

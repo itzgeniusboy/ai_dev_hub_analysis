@@ -106,7 +106,7 @@ class _ProxyScreenState extends State<ProxyScreen> {
     final running = c.server.running;
     final token = c.server.bearerToken;
     final urls = [
-      'http://localhost:${c.port}/v1',
+      'http://127.0.0.1:${c.port}/v1',
       if (c.lan) ..._ips.map((ip) => 'http://$ip:${c.port}/v1'),
     ];
     final exampleBase = urls.last;

@@ -6,6 +6,7 @@ import 'package:flutter/services.dart' show rootBundle;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../core/models.dart';
+import 'default_providers.dart';
 import 'openai_compatible_client.dart';
 
 /// Router: ordered fallback across the built-in gateways (OmniRoute, then
@@ -23,8 +24,42 @@ class RouterService {
     return t != null && DateTime.now().isBefore(t);
   }
 
-  void _cool(Endpoint e, Duration d) =>
-      _cooldownUntil[e.id] = DateTime.now().add(d);
+  final Map<String, String> _lastErr = {};
+  final Set<String> _rateLimited = {};
+
+  void _cool(Endpoint e, Duration d, [Object? err, bool rate = false]) {
+    _cooldownUntil[e.id] = DateTime.now().add(d);
+    if (err != null) _lastErr[e.id] = _short(err);
+    rate ? _rateLimited.add(e.id) : _rateLimited.remove(e.id);
+  }
+
+  static String _short(Object err) {
+    final t = err is LlmError ? err.message : '$err';
+    final one = t.replaceAll(RegExp(r'\s+'), ' ').trim();
+    return one.length > 140 ? '${one.substring(0, 140)}...' : one;
+  }
+
+  /// Forget all cool-downs (call when keys / URLs change).
+  void resetCooldowns() {
+    _cooldownUntil.clear();
+    _lastErr.clear();
+    _rateLimited.clear();
+  }
+
+  String _details(Iterable<Endpoint> es) {
+    final seen = <String>{};
+    final lines = <String>[];
+    for (final e in es) {
+      final key = '${e.providerId}/${e.model}';
+      final err = _lastErr[e.id];
+      if (err == null || !seen.add(key)) continue;
+      final t = _cooldownUntil[e.id];
+      final left = t == null ? 0 : t.difference(DateTime.now()).inSeconds;
+      lines.add('- ${DefaultProviders.label(e.providerId)}/${e.model}: $err'
+          '${left > 0 ? ' (retry in ${left}s)' : ''}');
+    }
+    return lines.join('\n');
+  }
 
   /// Targets that are configured AND not cooling down after an error — i.e.
   /// the models the user can actually use right now.
@@ -49,12 +84,15 @@ class RouterService {
               : 'Model "${req.model}" is not available. Switch to Auto or pick another model.');
     }
 
-    var skipped = 0;
-    for (final e in candidates) {
-      if (_cooling(e)) {
-        skipped++;
-        continue;
-      }
+    // Prefer healthy targets. If every target is cooling, try the ones that
+    // are NOT rate-limited anyway (a cool-down must never lock the user out
+    // after they fixed a URL or key). Rate-limited ones really are skipped.
+    var targets = candidates.where((e) => !_cooling(e)).toList();
+    if (targets.isEmpty) {
+      targets = candidates.where((e) => !_rateLimited.contains(e.id)).toList();
+    }
+    final skipped = candidates.length - targets.length;
+    for (final e in targets) {
       final s = stats.putIfAbsent(e.providerId, ProviderStats.new);
       final sw = Stopwatch()..start();
       final it = StreamIterator(client.streamRaw(e, req, cancel: cancel));
@@ -79,17 +117,17 @@ class RouterService {
         return; // success
       } on RateLimitError catch (err) {
         s.errors++;
-        _cool(e, err.retryAfter);
+        _cool(e, err.retryAfter, err, true);
         lastError = err;
         if (emitted) rethrow;
       } on TransientError catch (err) {
         s.errors++;
-        _cool(e, const Duration(seconds: 20));
+        _cool(e, const Duration(seconds: 20), err);
         lastError = err;
         if (emitted) rethrow;
       } on FatalError catch (err) {
         s.errors++;
-        _cool(e, const Duration(minutes: 5)); // bad key / model: stop hammering
+        _cool(e, const Duration(minutes: 5), err); // bad key / model: stop hammering
         lastError = err;
         if (emitted) rethrow;
       } finally {
@@ -97,10 +135,12 @@ class RouterService {
       }
     }
     if (lastError == null && skipped > 0) {
-      throw const AllProvidersFailed(null,
-          'All matching providers are cooling down after recent errors. Try again shortly.');
+      throw AllProvidersFailed(
+          null,
+          'All matching providers are rate-limited. Try again shortly.',
+          _details(candidates));
     }
-    throw AllProvidersFailed(lastError);
+    throw AllProvidersFailed(lastError, null, _details(candidates));
   }
 
   static (int, int)? _usageOf(String payload) {

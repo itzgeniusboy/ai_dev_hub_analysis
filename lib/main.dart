@@ -9,6 +9,7 @@ import 'package:open_filex/open_filex.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 
+import 'core/chat_mode.dart';
 import 'core/models.dart';
 import 'core/theme.dart';
 import 'features/chat/chat_screen.dart';
@@ -83,7 +84,7 @@ class AppServices {
 
   /// Null when no tool source is available (no repo selected and device
   /// file access switched off).
-  AgentRunner? makeAgent() {
+  AgentRunner? makeAgent(ChatMode mode) {
     final kits = <Toolkit>[];
     final g = gh, sel = selection;
     if (settings.toolsEnabled && g != null && sel != null) {
@@ -98,8 +99,16 @@ class AppServices {
     if (settings.deviceFilesEnabled && deviceFiles != null) kits.add(deviceFiles!);
     if (settings.terminalEnabled) kits.add(TerminalToolkit(terminalBridge, settings));
     if (kits.isEmpty) return null;
+    final auto = mode == ChatMode.autonomous;
     return AgentRunner(
-        router: router, toolkit: kits.length == 1 ? kits.first : ToolkitSet(kits));
+      router: router,
+      toolkit: kits.length == 1 ? kits.first : ToolkitSet(kits),
+      maxSteps: auto ? 100 : 25,
+      maxDuration: auto ? const Duration(minutes: 45) : null,
+      modeNote: auto
+          ? 'Mode: AUTONOMOUS. Work on your own until the task is finished. Do not ask questions unless you are truly blocked; make reasonable assumptions and state them. Go through every step needed, verify results, then finish with a short summary. Actions that need approval wait for the user; never retry a denied action.'
+          : 'Mode: BUILD. Work through the task step by step until it is complete: inspect first, make the change, then verify it. End with a short summary of what changed and what is left.',
+    );
   }
 
   static Future<AppServices> create() async {
@@ -184,6 +193,7 @@ class AppServices {
       if (base.isEmpty) continue;
       if (p.requiresKey && key.isEmpty) continue;
       if (isCustom && key.isEmpty && (await store.baseUrl(p.id)) == null) continue;
+      if (_pointsAtOwnProxy(base)) continue; // would call itself in a loop
       final models = isCustom ? ['auto'] : p.models;
       for (final m in models) {
         out.add(Endpoint(providerId: p.id, baseUrl: base, apiKey: key, model: m));
@@ -200,6 +210,21 @@ class AppServices {
       }
     }
     chain = out;
+    final sig = out.map((e) => '${e.id}|${e.baseUrl}|${e.apiKey.hashCode}').join(';');
+    if (_chainSig != null && _chainSig != sig) router.resetCooldowns(); // config changed
+    _chainSig = sig;
+  }
+
+  String? _chainSig;
+
+  /// True if [url] targets this phone's own proxy port (loopback), which would
+  /// make the app call itself.
+  bool _pointsAtOwnProxy(String url) {
+    final u = Uri.tryParse(OpenAICompatibleClient.normalizeBase(url));
+    if (u == null) return false;
+    const loop = {'localhost', '127.0.0.1', '::1', '[::1]', '0.0.0.0'};
+    final port = u.hasPort ? u.port : (u.scheme == 'https' ? 443 : 80);
+    return loop.contains(u.host) && port == proxy.port;
   }
 }
 

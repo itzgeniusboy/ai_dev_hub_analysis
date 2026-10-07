@@ -7,6 +7,7 @@ import 'package:shelf/shelf.dart';
 import 'package:shelf/shelf_io.dart' as io;
 
 import '../core/models.dart';
+import 'openai_compatible_client.dart';
 import 'router_service.dart';
 
 /// OpenAI-compatible endpoint on the phone:
@@ -16,7 +17,7 @@ import 'router_service.dart';
 class ProxyServer {
   final RouterService router;
   final List<String> Function() modelIds;
-  HttpServer? _server;
+  final List<HttpServer> _servers = [];
   String bearerToken;
 
   ProxyServer({required this.router, required this.modelIds, String? token})
@@ -28,45 +29,89 @@ class ProxyServer {
     return 'sk-local-${base64Url.encode(bytes).replaceAll('=', '')}';
   }
 
-  bool get running => _server != null;
+  bool get running => _servers.isNotEmpty;
   bool lanActive = false; // false if LAN bind fell back to loopback
 
   /// [lan]=false binds loopback only (safe default). true binds all interfaces.
   Future<int> start({int port = 8080, bool lan = false}) async {
     await stop();
     final handler = const Pipeline()
+        .addMiddleware(_loopGuard())
         .addMiddleware(_auth())
         .addHandler(_route);
-    Future<HttpServer> bind(InternetAddress a) =>
-        io.serve(handler, a, port, shared: true);
+
+    Future<HttpServer> bind(InternetAddress a, int p) => io.serve(handler, a, p, shared: true);
+
+    HttpServer first;
     try {
-      _server = await bind(
-          lan ? InternetAddress.anyIPv4 : InternetAddress.loopbackIPv4);
+      first = await bind(lan ? InternetAddress.anyIPv4 : InternetAddress.loopbackIPv4, port);
       lanActive = lan;
     } on SocketException catch (e) {
       if (!lan) {
-        throw SocketException(
-            '${e.message} (check INTERNET permission / try another port)');
+        throw SocketException('${e.message} (check INTERNET permission / try another port)');
       }
       // Wi-Fi sharing refused (hotspot/VPN/OEM restriction): stay on loopback.
-      _server = await bind(InternetAddress.loopbackIPv4);
+      first = await bind(InternetAddress.loopbackIPv4, port);
       lanActive = false;
     }
-    return _server!.port;
+    _servers.add(first);
+
+    // "localhost" often resolves to ::1 first. Listen there too (best effort) so
+    // apps using http://localhost:PORT do not get "connection refused".
+    try {
+      _servers.add(await bind(
+          lanActive ? InternetAddress.anyIPv6 : InternetAddress.loopbackIPv6, first.port));
+    } catch (_) {}
+    return first.port;
   }
 
   Future<void> stop() async {
-    await _server?.close(force: true);
-    _server = null;
+    for (final s in _servers) {
+      await s.close(force: true);
+    }
+    _servers.clear();
   }
 
-  Middleware _auth() => (inner) => (req) {
-        final got = req.headers['authorization'] ?? '';
-        if (!_constEq(got, 'Bearer $bearerToken')) {
-          return _json(401, {'error': {'message': 'invalid bearer token'}});
+  /// Requests sent by this app itself (see OpenAICompatibleClient.originHeader)
+  /// must never come back in: that would be a provider pointing at our own proxy.
+  Middleware _loopGuard() => (inner) => (req) {
+        if (req.headers.containsKey(OpenAICompatibleClient.originHeader.toLowerCase())) {
+          return _json(508, {
+            'error': {
+              'message': "This URL is AI Dev Hub's own local proxy. Don't add it as a "
+                  'provider (it would call itself). Use your real provider URL instead.'
+            }
+          });
         }
         return inner(req);
       };
+
+  Middleware _auth() => (inner) => (req) {
+        final p = req.url.path;
+        // Open health page so a browser test shows the server is up.
+        if (req.method == 'GET' && (p.isEmpty || p == 'health' || p == 'v1' || p == 'v1/')) {
+          return Response.ok(
+              'AI Dev Hub proxy is running.\n'
+              'Call /v1/chat/completions or /v1/models with the header\n'
+              'Authorization: Bearer <token from the Proxy screen>\n',
+              headers: {'content-type': 'text/plain'});
+        }
+        final raw = (req.headers['authorization'] ?? '').trim();
+        if (raw.isEmpty) {
+          return _unauth('missing Authorization header (expected "Bearer <token>")');
+        }
+        final m = RegExp(r'^bearer\s+(.+)$', caseSensitive: false).firstMatch(raw);
+        final got = (m?.group(1) ?? raw).trim(); // tolerate pasted whitespace / no scheme
+        if (!_constEq(got, bearerToken.trim())) {
+          return _unauth('invalid bearer token (copy the current one from the Proxy screen; '
+              '"Regenerate" invalidates old tokens)');
+        }
+        return inner(req);
+      };
+
+  Response _unauth(String msg) => Response(401,
+      body: jsonEncode({'error': {'message': msg}}),
+      headers: {'content-type': 'application/json', 'www-authenticate': 'Bearer'});
 
   // Constant-time compare so the token can't be probed byte by byte.
   static bool _constEq(String a, String b) {
