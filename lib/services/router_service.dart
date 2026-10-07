@@ -45,7 +45,7 @@ class RouterService {
       throw AllProvidersFailed(
           null,
           req.model == 'auto'
-              ? 'No models are reachable right now. Check your connection and try again.'
+              ? 'No providers configured. Open Settings > Providers and add an API key (Groq, Gemini, OpenRouter) or enable Pollinations.'
               : 'Model "${req.model}" is not available. Switch to Auto or pick another model.');
     }
 

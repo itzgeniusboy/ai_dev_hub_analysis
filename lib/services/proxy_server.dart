@@ -29,6 +29,7 @@ class ProxyServer {
   }
 
   bool get running => _server != null;
+  bool lanActive = false; // false if LAN bind fell back to loopback
 
   /// [lan]=false binds loopback only (safe default). true binds all interfaces.
   Future<int> start({int port = 8080, bool lan = false}) async {
@@ -36,10 +37,21 @@ class ProxyServer {
     final handler = const Pipeline()
         .addMiddleware(_auth())
         .addHandler(_route);
-    _server = await io.serve(
-        handler,
-        lan ? InternetAddress.anyIPv4 : InternetAddress.loopbackIPv4,
-        port);
+    Future<HttpServer> bind(InternetAddress a) =>
+        io.serve(handler, a, port, shared: true);
+    try {
+      _server = await bind(
+          lan ? InternetAddress.anyIPv4 : InternetAddress.loopbackIPv4);
+      lanActive = lan;
+    } on SocketException catch (e) {
+      if (!lan) {
+        throw SocketException(
+            '${e.message} (check INTERNET permission / try another port)');
+      }
+      // Wi-Fi sharing refused (hotspot/VPN/OEM restriction): stay on loopback.
+      _server = await bind(InternetAddress.loopbackIPv4);
+      lanActive = false;
+    }
     return _server!.port;
   }
 

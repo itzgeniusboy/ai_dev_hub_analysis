@@ -20,6 +20,10 @@ import 'features/settings/settings_screen.dart';
 import 'features/settings/skills_screen.dart';
 import 'services/agent/agent_runner.dart';
 import 'services/agent/agent_tools.dart';
+import 'services/agent/device_file_tools.dart';
+import 'services/agent/terminal_tools.dart';
+import 'services/terminal/terminal_bridge.dart';
+import 'features/settings/terminal_screen.dart';
 import 'services/app_settings.dart';
 import 'services/build_poller.dart';
 import 'services/chat_codec.dart';
@@ -33,6 +37,8 @@ import 'services/router_service.dart';
 import 'services/secure_store.dart';
 import 'services/session_store.dart';
 import 'services/skill_store.dart';
+import 'services/skill_hub.dart';
+import 'features/settings/skill_hub_screen.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -71,23 +77,43 @@ class AppServices {
   String? _wsKey;
   GitHubService? _wsGh;
 
-  /// Null when GitHub isn't connected or no repo is chosen.
+  final terminalBridge = TerminalBridge();
+  late final SkillHub skillHub;
+  DeviceFileToolkit? deviceFiles; // set in create(); used when enabled in Settings
+
+  /// Null when no tool source is available (no repo selected and device
+  /// file access switched off).
   AgentRunner? makeAgent() {
+    final kits = <Toolkit>[];
     final g = gh, sel = selection;
-    if (g == null || sel == null) return null;
-    final key = sel.encode();
-    if (_ws == null || _wsKey != key || !identical(_wsGh, g)) {
-      _ws = AgentWorkspace(g, sel.repo, sel.branch, sel.workflowFile);
-      _wsKey = key;
-      _wsGh = g;
+    if (settings.toolsEnabled && g != null && sel != null) {
+      final key = sel.encode();
+      if (_ws == null || _wsKey != key || !identical(_wsGh, g)) {
+        _ws = AgentWorkspace(g, sel.repo, sel.branch, sel.workflowFile);
+        _wsKey = key;
+        _wsGh = g;
+      }
+      kits.add(AgentToolkit(_ws!));
     }
-    return AgentRunner(router: router, toolkit: AgentToolkit(_ws!));
+    if (settings.deviceFilesEnabled && deviceFiles != null) kits.add(deviceFiles!);
+    if (settings.terminalEnabled) kits.add(TerminalToolkit(terminalBridge, settings));
+    if (kits.isEmpty) return null;
+    return AgentRunner(
+        router: router, toolkit: kits.length == 1 ? kits.first : ToolkitSet(kits));
   }
 
   static Future<AppServices> create() async {
     final a = AppServices();
     await a.settings.load();
     await a.skills.load();
+    a.skillHub = SkillHub(
+        gh: () => a.gh,
+        connected: () => a.selection == null ? null : (repo: a.selection!.repo, branch: a.selection!.branch),
+        store: a.skills);
+    await a.skillHub.load();
+    final docs = await getApplicationDocumentsDirectory();
+    a.deviceFiles = DeviceFileToolkit('${docs.path}/fs_trash');
+    unawaited(a.deviceFiles!.purgeOldTrash());
     a.providers = await ProviderRegistry(registryUrl).load();
     a.router = RouterService(client: a.client, chain: () => a.chain);
     a.proxyServer =
@@ -102,6 +128,7 @@ class AppServices {
       a.gh = GitHubService(token);
       a.poller = BuildPoller(a.gh!);
       a.selection = RepoSelection.decode(await a.store.repoSelection());
+      unawaited(a.skillHub.syncAll()); // pick up new skills in the background
     }
     return a;
   }
@@ -267,7 +294,14 @@ class _HomeShellState extends State<HomeShell> {
     action();
   }
 
-  void _openSkills() => _push(SkillsScreen(store: app.skills));
+  void _openSkills() => _push(SkillsScreen(store: app.skills, onBrowseGitHub: _openSkillHub));
+
+  void _openSkillHub() => _push(SkillHubScreen(
+        hub: app.skillHub,
+        store: app.skills,
+        connected: app.gh != null,
+        onConnect: _openGitHub,
+      ));
 
   void _openConnectors() => _push(ConnectorsScreen(
         settings: app.settings,
@@ -286,6 +320,8 @@ class _HomeShellState extends State<HomeShell> {
         stats: () => app.router.stats,
       ));
 
+  void _openTerminal() => _push(TerminalScreen(settings: app.settings, bridge: app.terminalBridge));
+
   void _openProxy() => _push(ProxyScreen(controller: app.proxy));
 
   void _openSettings() => _push(SettingsScreen(
@@ -297,6 +333,7 @@ class _HomeShellState extends State<HomeShell> {
         },
         onOpenProviders: _openProviders,
         onOpenProxy: _openProxy,
+        onOpenTerminal: _openTerminal,
       ));
 
   Widget _drawer() {
@@ -504,7 +541,7 @@ class _HomeShellState extends State<HomeShell> {
           onDownloadArtifact: _downloadArtifact,
           onPickFile: _attachFile,
           onPickPhoto: _attachPhoto,
-          toolsEnabled: s.toolsEnabled,
+          toolsEnabled: s.toolsEnabled || s.deviceFilesEnabled || s.terminalEnabled,
           agentFactory: app.makeAgent,
         ),
       ),

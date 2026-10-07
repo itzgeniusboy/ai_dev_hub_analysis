@@ -15,6 +15,9 @@ class AppSettings extends ChangeNotifier {
   static const int contextMessages = 30; // recent messages sent as context
   String? workspaceUri; // SAF tree URI
   bool toolsEnabled = false; // let the model use repo tools (agent mode)
+  bool terminalEnabled = false; // termux_run / shell_run tools
+  bool terminalConfirm = true; // ask before every command
+  bool deviceFilesEnabled = false; // let the model manage files on the device
 
   late SharedPreferences _p;
 
@@ -27,6 +30,9 @@ class AppSettings extends ChangeNotifier {
     systemPrompt = _p.getString('systemPrompt') ?? systemPrompt;
     workspaceUri = _p.getString('workspaceUri');
     toolsEnabled = _p.getBool('toolsEnabled') ?? false;
+    deviceFilesEnabled = _p.getBool('deviceFilesEnabled') ?? false;
+    terminalEnabled = _p.getBool('terminalEnabled') ?? false;
+    terminalConfirm = _p.getBool('terminalConfirm') ?? true;
     notifyListeners();
   }
 
@@ -36,6 +42,9 @@ class AppSettings extends ChangeNotifier {
   void setFontScale(double v) { fontScale = v; _p.setDouble('fontScale', v); _done(); }
   void setSystemPrompt(String v) { systemPrompt = v; _p.setString('systemPrompt', v); _done(); }
   void setToolsEnabled(bool v) { toolsEnabled = v; _p.setBool('toolsEnabled', v); _done(); }
+  void setDeviceFilesEnabled(bool v) { deviceFilesEnabled = v; _p.setBool('deviceFilesEnabled', v); _done(); }
+  void setTerminalEnabled(bool v) { terminalEnabled = v; _p.setBool('terminalEnabled', v); _done(); }
+  void setTerminalConfirm(bool v) { terminalConfirm = v; _p.setBool('terminalConfirm', v); _done(); }
   void setWorkspace(String? uri) {
     workspaceUri = uri;
     uri == null ? _p.remove('workspaceUri') : _p.setString('workspaceUri', uri);

@@ -18,7 +18,19 @@ jobs:
         with: { distribution: temurin, java-version: "17" }
       - uses: subosito/flutter-action@v2
         with: { channel: stable, cache: true }
+      - name: Generate android platform files
+        run: |
+          flutter create --platforms=android --org com.example --project-name ai_dev_hub /tmp/gen
+          cp -r /tmp/gen/android ./android
+      - name: Patch android project (manifest, permissions, Termux/Shizuku bridge)
+        run: python3 android_overlay/patch_android.py
       - run: flutter pub get
+      - name: Force compileSdk 36 (plugins require it)
+        run: |
+          APP_GRADLE=$(ls android/app/build.gradle android/app/build.gradle.kts 2>/dev/null | head -1)
+          sed -i -E 's/compileSdk(Version)?[[:space:]]*=?[[:space:]]*(flutter\.compileSdkVersion|[0-9]+)/compileSdk = 36/' "$APP_GRADLE"
+          find "$HOME/.pub-cache/hosted" \( -name build.gradle -o -name build.gradle.kts \) -path "*/android/*" \
+            -exec sed -i -E 's/(compileSdk(Version)?[[:space:]]*=?[[:space:]]*)[0-9]+/\1 36/g' {} +
       - run: flutter build apk --release
         # For a properly signed release, decode a keystore from secrets and
         # configure android/key.properties before this step.

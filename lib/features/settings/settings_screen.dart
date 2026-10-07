@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 
@@ -16,6 +17,7 @@ class SettingsScreen extends StatefulWidget {
   final Future<void> Function(List<ChatSession>) importSessions;
   final VoidCallback? onOpenProviders;
   final VoidCallback? onOpenProxy;
+  final VoidCallback? onOpenTerminal;
   const SettingsScreen({
     super.key,
     required this.settings,
@@ -23,6 +25,7 @@ class SettingsScreen extends StatefulWidget {
     required this.importSessions,
     this.onOpenProviders,
     this.onOpenProxy,
+    this.onOpenTerminal,
   });
 
   @override
@@ -128,6 +131,30 @@ class _SettingsScreenState extends State<SettingsScreen> {
               setState(() {});
             },
           ),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('Device file access'),
+            subtitle: const Text(
+                'Let the model list, read, edit, move and delete files on this phone. Deletes ask first and go to a 30-day trash; edits are backed up. Needs "All files access".'),
+            value: s.deviceFilesEnabled,
+            onChanged: (v) async {
+              Haptics.toggle();
+              if (v) {
+                var st = await Permission.manageExternalStorage.status;
+                if (!st.isGranted) st = await Permission.manageExternalStorage.request();
+                if (!st.isGranted) {
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                        content: Text('Grant "All files access" for AI Dev Hub, then switch this on again.')));
+                  }
+                  await openAppSettings();
+                  return;
+                }
+              }
+              s.setDeviceFilesEnabled(v);
+              setState(() {});
+            },
+          ),
         ]),
         _section('Chats', [
           Wrap(spacing: 8, runSpacing: 8, children: [
@@ -152,6 +179,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
             subtitle: const Text('Share the router with other apps on this device.'),
             trailing: const Icon(Icons.chevron_right_rounded),
             onTap: widget.onOpenProxy,
+          ),
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: const Icon(Icons.terminal_rounded),
+            title: const Text('Terminal (Termux + Shizuku)'),
+            subtitle: const Text('Let the model run commands. Setup and permissions.'),
+            trailing: const Icon(Icons.chevron_right_rounded),
+            onTap: widget.onOpenTerminal,
           ),
         ]),
       ]),

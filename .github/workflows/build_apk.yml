@@ -25,6 +25,9 @@ jobs:
           flutter create --platforms=android --org com.example --project-name ai_dev_hub /tmp/gen
           cp -r /tmp/gen/android ./android
 
+      - name: Patch android project (manifest, permissions, Termux/Shizuku bridge)
+        run: python3 android_overlay/patch_android.py
+
       - name: Pub get
         run: flutter pub get
 

@@ -42,3 +42,22 @@ Notes:
 Build config (`android/app/build.gradle` or `build.gradle.kts`):
 - Set `minSdk` to 23 or higher. `flutter_secure_storage` 9.x requires it and
   Flutter's default is lower, so the build fails at manifest merge otherwise.
+
+## Required: INTERNET permission (release builds)
+`flutter create` adds INTERNET only to the debug/profile manifests, so release
+APKs get "Operation not permitted" on every socket (chat AND local proxy).
+`.github/workflows/build_apk.yml` now patches the manifest automatically. If you
+build locally, add the permissions above to `android/app/src/main/AndroidManifest.xml`
+(plus ACCESS_NETWORK_STATE) and rebuild.
+
+## Device file tools
+Settings > "Device file access" uses MANAGE_EXTERNAL_STORAGE ("All files access") so the model can work on any
+path under /storage/emulated/0. Fine for sideloading; Google Play restricts this permission. Deletes go to
+`<app documents>/fs_trash` (30 days, `fs_restore` brings them back); /data, /system and other apps' private
+folders are blocked.
+
+## Terminal tools (Termux + Shizuku)
+Native code lives in `android_overlay/MainActivity.kt`; CI copies it over the generated MainActivity and adds the
+Shizuku dependencies/provider and the `com.termux.permission.RUN_COMMAND` permission. Local builds: do the same.
+Setup on the phone: install Termux (F-Droid/GitHub build), run the command shown in Settings > Terminal inside Termux
+(`allow-external-apps=true`) and restart it, start Shizuku, then grant both permissions in the Terminal screen.

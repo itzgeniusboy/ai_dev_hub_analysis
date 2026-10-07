@@ -8,7 +8,8 @@ import '../../services/skill_store.dart';
 /// system prompt while enabled).
 class SkillsScreen extends StatelessWidget {
   final SkillStore store;
-  const SkillsScreen({super.key, required this.store});
+  final VoidCallback? onBrowseGitHub;
+  const SkillsScreen({super.key, required this.store, this.onBrowseGitHub});
 
   Future<void> _edit(BuildContext context, [Skill? skill]) async {
     final name = TextEditingController(text: skill?.name ?? '');
@@ -51,7 +52,13 @@ class SkillsScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Skills')),
+      appBar: AppBar(title: const Text('Skills'), actions: [
+        if (onBrowseGitHub != null)
+          IconButton(
+              tooltip: 'Import from GitHub',
+              icon: const Icon(Icons.cloud_download_outlined),
+              onPressed: onBrowseGitHub),
+      ]),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: () => _edit(context),
         icon: const Icon(Icons.add_rounded),
@@ -86,7 +93,7 @@ class SkillsScreen extends StatelessWidget {
                         child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Text(s.name,
+                              Text(s.fromGitHub ? '${s.name}  ·  ${s.sourceRepo}' : s.name,
                                   style: Theme.of(context).textTheme.titleSmall),
                               const SizedBox(height: 2),
                               Text(s.instructions,

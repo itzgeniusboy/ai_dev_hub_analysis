@@ -34,8 +34,41 @@ class AgentWorkspace {
   String get slug => '${repo.owner}/${repo.repo}@$branch';
 }
 
+/// What the agent loop needs from a set of tools.
+abstract class Toolkit {
+  List<Map<String, dynamic>> get schemas;
+  String get systemNote;
+  String label(String name, Map<String, dynamic> args);
+  ApprovalRequest? approval(String name, Map<String, dynamic> args);
+  Future<ToolResult> run(String name, Map<String, dynamic> args);
+}
+
+/// Several toolkits behind one interface (GitHub repo tools + device files).
+class ToolkitSet implements Toolkit {
+  final List<Toolkit> kits;
+  final Map<String, Toolkit> _owner = {};
+  ToolkitSet(this.kits) {
+    for (final k in kits) {
+      for (final s in k.schemas) {
+        _owner[(s['function'] as Map)['name'] as String] = k;
+      }
+    }
+  }
+  @override
+  List<Map<String, dynamic>> get schemas => [for (final k in kits) ...k.schemas];
+  @override
+  String get systemNote => kits.map((k) => k.systemNote).join('\n\n');
+  @override
+  String label(String n, Map<String, dynamic> a) => _owner[n]?.label(n, a) ?? n;
+  @override
+  ApprovalRequest? approval(String n, Map<String, dynamic> a) => _owner[n]?.approval(n, a);
+  @override
+  Future<ToolResult> run(String n, Map<String, dynamic> a) async =>
+      _owner[n]?.run(n, a) ?? ToolResult('Unknown tool "$n".', ok: false);
+}
+
 /// Tool schemas (OpenAI function-calling format) + their implementations.
-class AgentToolkit {
+class AgentToolkit implements Toolkit {
   static const maxFileChars = 200 * 1024;
   static const _readCap = 12000;
 

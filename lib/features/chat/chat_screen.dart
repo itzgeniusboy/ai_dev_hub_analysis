@@ -301,7 +301,7 @@ class _ChatScreenState extends State<ChatScreen> {
     if (widget.toolsEnabled && agent == null) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
           content: Text(
-              'Agent tools need a GitHub repo (tap the GitHub icon). Sending as plain chat.')));
+              'Agent tools need a GitHub repo (tap the GitHub icon) Device file access or Terminal in Settings. Sending as plain chat.')));
     }
     if (agent != null) {
       _runAgent(agent, reply);

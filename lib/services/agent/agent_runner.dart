@@ -47,7 +47,7 @@ class AgentRunner {
   static const _resultCap = 16000;
 
   final RouterService router;
-  final AgentToolkit toolkit;
+  final Toolkit toolkit;
   final int maxSteps;
   AgentRunner({required this.router, required this.toolkit, this.maxSteps = 10});
 

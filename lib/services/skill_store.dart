@@ -10,14 +10,31 @@ class Skill {
   String name;
   String instructions;
   bool enabled;
-  Skill(this.id, this.name, this.instructions, {this.enabled = true});
 
-  Map<String, dynamic> toJson() =>
-      {'id': id, 'name': name, 'instructions': instructions, 'enabled': enabled};
+  /// Set for skills imported from GitHub (used to detect updates).
+  String? sourceRepo, sourcePath, sourceSha;
+
+  Skill(this.id, this.name, this.instructions,
+      {this.enabled = true, this.sourceRepo, this.sourcePath, this.sourceSha});
+
+  bool get fromGitHub => sourceRepo != null;
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'name': name,
+        'instructions': instructions,
+        'enabled': enabled,
+        if (sourceRepo != null) 'sourceRepo': sourceRepo,
+        if (sourcePath != null) 'sourcePath': sourcePath,
+        if (sourceSha != null) 'sourceSha': sourceSha,
+      };
 
   factory Skill.fromJson(Map<String, dynamic> j) => Skill(
       j['id'].toString(), '${j['name']}', '${j['instructions']}',
-      enabled: j['enabled'] != false);
+      enabled: j['enabled'] != false,
+      sourceRepo: j['sourceRepo'] as String?,
+      sourcePath: j['sourcePath'] as String?,
+      sourceSha: j['sourceSha'] as String?);
 }
 
 class SkillStore extends ChangeNotifier {
@@ -68,6 +85,36 @@ class SkillStore extends ChangeNotifier {
   Future<void> setEnabled(Skill s, bool v) {
     s.enabled = v;
     return _save();
+  }
+
+  Skill? findBySource(String repo, String path) {
+    for (final s in skills) {
+      if (s.sourceRepo == repo && s.sourcePath == path) return s;
+    }
+    return null;
+  }
+
+  /// Add (or refresh) a skill imported from GitHub. A new import starts OFF:
+  /// its text goes into every prompt, so the user turns it on deliberately.
+  /// Re-importing keeps the user's on/off choice.
+  Future<Skill> importRemote(
+      {required String repo,
+      required String path,
+      required String sha,
+      required String name,
+      required String instructions}) {
+    final existing = findBySource(repo, path);
+    if (existing != null) {
+      existing
+        ..name = name
+        ..instructions = instructions
+        ..sourceSha = sha;
+      return _save().then((_) => existing);
+    }
+    final sk = Skill('gh:$repo/$path', name, instructions,
+        enabled: false, sourceRepo: repo, sourcePath: path, sourceSha: sha);
+    skills.add(sk);
+    return _save().then((_) => sk);
   }
 
   Future<void> remove(Skill s) {
