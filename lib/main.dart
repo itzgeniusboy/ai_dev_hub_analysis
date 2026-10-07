@@ -273,7 +273,9 @@ class _HomeShellState extends State<HomeShell> {
         settings: app.settings,
         files: app.files,
         githubConnected: app.gh != null,
-        repoLabel: app.selection == null ? null : app.selection!.repo,
+        repoLabel: app.selection == null
+            ? null
+            : '${app.selection!.repo.owner}/${app.selection!.repo.repo}',
         onOpenGitHub: _openGitHub,
       ));
 
